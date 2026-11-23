@@ -1,0 +1,14 @@
+These files are from the LZMA SDK 9.20 by Igor Pavlov, unchanged:
+LzmaEnc.c, LzmaEnc.h, LzFind.c, LzFind.h, LzHash.h, Types.h, Bra86.c, Bra.h,
+from C/ in https://www.7-zip.org/a/lzma920.tar.bz2
+(SHA-256 8ac221acdca8b6f6dd110120763af42b3707363752fc04e63c7bbff76774a445).
+Its lzma.txt says of its licence:
+
+LICENSE
+-------
+
+LZMA SDK is written and placed in the public domain by Igor Pavlov.
+
+Some code in LZMA SDK is based on public domain code from another developers:
+  1) PPMd var.H (2001): Dmitry Shkarin
+  2) SHA-256: Wei Dai (Crypto++ library)

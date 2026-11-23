@@ -179,15 +179,20 @@ def expand(payload, need, profile):
 
 
 def unpack(data, limit=256 << 20):
+    fields, size, magic = expand_member(data, limit)
+    return split.join(fields, size, magic == b"HDL1")
+
+
+def expand_member(data, limit=256 << 20):
+    """A member's fields, its image size and its tag."""
     magic, size, need, crc = struct.unpack_from("<4sIII", data)
     payload = data[16:]
     if magic not in (b"HDL1", b"HDS2", b"HDB2", b"HDX2") or max(size, need) > limit:
         raise ValueError("invalid header or size limit exceeded")
     if zlib.crc32(payload, zlib.crc32(data[:12])) != crc:
         raise ValueError("checksum mismatch")
-    legacy = magic == b"HDL1"
     if magic in (b"HDL1", b"HDS2"):
-        return split.join(expand(payload, need, LZMA), size, legacy)
+        return expand(payload, need, LZMA), size, magic
     fields = bytearray()
     pos = 0
     while pos < len(payload):
@@ -216,7 +221,7 @@ def unpack(data, limit=256 << 20):
         raise ValueError("incomplete blocks")
     if magic == b"HDX2":
         fields = jcc_xor(fields, inverse=True)
-    return split.join(fields, size, legacy)
+    return bytes(fields), size, magic
 
 
 def compare(data, bounds=None):
@@ -258,3 +263,7 @@ def main():
             args.output.write_bytes(unpack(data) if args.cmd == "unpack" else pack(data, args.code))
     except (ValueError, OSError, struct.error, lzma.LZMAError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"heddle: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()

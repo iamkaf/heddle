@@ -1,6 +1,6 @@
 # Heddle member format, version 2
 
-This is the wire format that `heddle.py` writes and that `heddle.py` and the checked C decoder (`unpack.c`, `unsplit.c`) read. Version 2 is frozen: the tags below always mean the layouts below, and any incompatible change takes a new tag. All integers are little-endian.
+This is the wire format that the packers write and that the readers read. The C packer (`pack.c`) is the one for use; the Python packer (`heddle.py`, `split.py`, `opcodes.py`) is the reference the tests hold it to. The readers are the checked C decoder (`unpack.c`, `unsplit.c`) and `heddle.py`. Version 2 is frozen: the tags below always mean the layouts below, and any incompatible change takes a new tag. All integers are little-endian.
 
 ## Header
 
@@ -29,7 +29,7 @@ The fields are 21 u32s, then the 19 streams in the same order, then the data:
 3. The streams, concatenated in that order.
 4. The data: the image's bytes before `lo`, then those from `hi` to the end.
 
-The streams hold the code's instructions, field by field, as the walker in `split.py` (`walk`) and `unsplit.c` reads them: OP takes prefixes, REX, opcode bytes and ModRM; SIB the SIB byte; D8 and D32 displacements, with the S streams for those off the stack pointer and the L streams for LEA's; RIP the RIP-relative displacements; ISH the shift counts; I8, I32, IMR and I64 the other immediates; MOV the 32-bit immediate of opcode C7; J8, JMP, JCC and CALL the branch distances. The opcode tables are `ONE` and `TWO` in `split.py`. Past the code's end the walker reads zeros, so the last instruction may take bytes of padding.
+The streams hold the code's instructions, field by field, as the walkers in `split.py` (`walk`), `pack.c` and `unsplit.c` read them: OP takes prefixes, REX, opcode bytes and ModRM; SIB the SIB byte; D8 and D32 displacements, with the S streams for those off the stack pointer and the L streams for LEA's; RIP the RIP-relative displacements; ISH the shift counts; I8, I32, IMR and I64 the other immediates; MOV the 32-bit immediate of opcode C7; J8, JMP, JCC and CALL the branch distances. The opcode tables are `ONE` and `TWO` in `split.py`. Past the code's end the walker reads zeros, so the last instruction may take bytes of padding.
 
 For a complete instruction (one that ends at or before `hi`), a CALL, JCC or RIP field holds its target as a file offset: the stored distance plus `lo`, plus the instruction's end within the code, modulo 2³². Every stream is used up exactly, and the image is exactly `image size` bytes.
 

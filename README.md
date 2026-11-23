@@ -31,9 +31,10 @@ Decoder bytes are x86-64 GCC 16.2 with `-Os -ffreestanding -fno-asynchronous-unw
 
 ## Try a file
 
-Python 3 with the standard lzma module runs the packer. Install nothing. Run these commands from the checkout.
+The packer is `pack.c`, in C11, with the LZMA encoder in `lzma/`. Install nothing: one line builds it. It is written for GCC, Clang and MinGW, and has been built and run on Linux only. Run these commands from the checkout.
 
 ```sh
+cc -O2 -DHEDDLE_CHECKED -D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c -o heddle
 ./heddle compare /usr/bin/ls
 ./heddle pack /usr/bin/ls ls.hdl
 ./heddle unpack ls.hdl ls.out
@@ -41,7 +42,11 @@ cmp /usr/bin/ls ls.out
 ./heddle pack image.bin image.hdl --code 0x2000 0x8000
 ```
 
-The CLI detects little-endian x86-64 ELF or PE files with a .text section. Specify file offsets for stripped section tables and raw blobs. The lower bound is inclusive and the upper bound exclusive. Compare uses the installed 7z or 7zz if available. The Python API is `heddle.pack(data, bounds=None, profile=heddle.LZMA)`, where a profile may change only how hard the encoder looks (FORMAT.md), `heddle.unpack(member, limit=256 << 20)` and `heddle.compare(data, bounds=None)`. Unpacking restores the file contents. File permissions belong to the caller.
+The command detects little-endian x86-64 ELF or PE files with a .text section. Specify file offsets for stripped section tables and raw blobs. The lower bound is inclusive and the upper bound exclusive. Compare uses the installed 7z or 7zz if available. Every pack reads its member back with the C reader before writing it. Unpacking restores the file contents. File permissions belong to the caller.
+
+The C packer is for use. `heddle.py` (with `split.py` and `opcodes.py`), the packer the format was worked out in, is the reference: `tests/pack.py` holds the C packer to it. Its API is `heddle.pack(data, bounds=None, profile=heddle.LZMA)`, where a profile may change only how hard the encoder looks (FORMAT.md), `heddle.unpack(member, limit=256 << 20)` and `heddle.compare(data, bounds=None)`, and `python3 heddle.py` takes the same commands.
+
+The encoder in `lzma/` is the LZMA SDK 9.20's, by Igor Pavlov, public domain, from [7-zip.org](https://www.7-zip.org/a/lzma920.tar.bz2), unchanged (`lzma/LICENSE`). It was measured against the SDK's latest (26.01) and liblzma: on Pinion's core it packs to 560,428 bytes against liblzma's 560,389, where 26.01's packs to 561,482, and the five other programs to 155,490 against the Python packer's 155,617. Built with `-DHEDDLE_LIBLZMA -llzma` in place of `lzma/LzmaEnc.c` and `lzma/LzFind.c`, the C packer compresses with liblzma, and its members are byte for byte those of the Python packer given the same setting.
 
 ## Embed the decoder
 
@@ -69,12 +74,14 @@ Peak storage is member plus output plus scratch, 16,406 bytes of fixed decoder s
 
 ## Why the transform works
 
-An opcode tends to look like another opcode, and stack offsets tend to repeat. Heddle walks the instruction bytes and collects 19 streams for fields such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references to the same target get the same image offset. LZMA sees those repetitions together. The inverse walker makes each choice from bytes it has already restored. An unfamiliar opcode, such as a vector prefix, can throw off instruction alignment and hurt compression. Both walkers still agree, even at a partial final instruction. Every pack checks the split against the Python inverse.
+An opcode tends to look like another opcode, and stack offsets tend to repeat. Heddle walks the instruction bytes and collects 19 streams for fields such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references to the same target get the same image offset. LZMA sees those repetitions together. The inverse walker makes each choice from bytes it has already restored. An unfamiliar opcode, such as a vector prefix, can throw off instruction alignment and hurt compression. Both walkers still agree, even at a partial final instruction. Every pack reads its member back, so a split the walkers disagree on is never written.
 
-BCJ converts branch targets, BCJ2 separates branch operands, and kkrunchy already demonstrated grouping x86 instruction fields for small executables. Heddle applies that approach to x86-64 with a Python packer and a freestanding C inverse. [XZ BCJ](https://tukaani.org/xz/liblzma-api/bcj_8h.html) · [7-Zip BCJ2](https://github.com/ip7z/7zip/blob/main/C/Bcj2.h) · [kkrunchy's filter](https://fgiesen.wordpress.com/2011/01/24/x86-code-compression-in-kkrunchy/)
+BCJ converts branch targets, BCJ2 separates branch operands, and kkrunchy already demonstrated grouping x86 instruction fields for small executables. Heddle applies that approach to x86-64 with a C packer and a freestanding C inverse. [XZ BCJ](https://tukaani.org/xz/liblzma-api/bcj_8h.html) · [7-Zip BCJ2](https://github.com/ip7z/7zip/blob/main/C/Bcj2.h) · [kkrunchy's filter](https://fgiesen.wordpress.com/2011/01/24/x86-code-compression-in-kkrunchy/)
 
 ## Run the native tests
 
 `CC=clang python3 test.py` compiles the public decoder with AddressSanitizer and UndefinedBehaviorSanitizer. It round-trips local binaries, partial instructions and random ranges, verifies scratch clearing, reads a version 1 member from the released writer, and exercises damaged members, invalid sizes and malformed inner streams with recomputed checksums. Every damaged member must get the same verdict from the Python and C readers. `tests/lzma1.py` writes exact LZMA symbol sequences for both sides of the whole-stream rule. Supply other files as arguments, with raw images written as FILE:LO:HI.
+
+`CC=clang python3 tests/pack.py` builds the C packer with both sanitizers, and with liblzma where it is installed, and holds it to the Python packer: on every input its fields equal the Python split's byte for byte, its opcode dictionary is `opcodes.encode`'s, each packer's members read with the other's reader, the liblzma build's members are the Python packer's, and malformed headers are refused in the same words. It takes the same arguments as test.py, and about 20 seconds.
 
 `python3 tests/mutate.py` removes each check of the two readers in turn and requires test.py to fail, so every check has a test of its own. It takes about a minute and a half.
