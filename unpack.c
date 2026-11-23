@@ -192,3 +192,30 @@ int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
     }
     return inpos > n;
 }
+
+#ifdef HEDDLE_CHECKED
+int heddle_join(uint8_t *, uint32_t, uint8_t *, uint32_t);
+
+int heddle_decode(const uint8_t *src, uint32_t bytes, uint8_t *dst,
+                  uint32_t capacity, uint8_t *scratch, uint32_t available)
+{
+    uint32_t size, need, stored, crc = ~0u;
+    if (bytes < 21 || src[0] != 'H' || src[1] != 'D' || src[2] != 'L' || src[3] != '1')
+        return 1;
+    __builtin_memcpy(&size, src + 4, 4);
+    __builtin_memcpy(&need, src + 8, 4);
+    __builtin_memcpy(&stored, src + 12, 4);
+    if (size > capacity || size > 0xffffff00u || need > available || need < 80)
+        return 1;
+    for (uint32_t i = 0; i < bytes; i++) {
+        if (i >= 12 && i < 16)
+            continue;
+        crc ^= src[i];
+        for (unsigned j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1)));
+    }
+    if (~crc != stored || pn_unpack(src + 16, bytes - 16, scratch, need))
+        return 1;
+    return heddle_join(dst, size, scratch, need);
+}
+#endif
