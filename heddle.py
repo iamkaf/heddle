@@ -191,6 +191,8 @@ def unpack(data, limit=256 << 20):
     fields = bytearray()
     pos = 0
     while pos < len(payload):
+        if len(payload) - pos < 9:
+            raise ValueError("invalid block")
         props, packed, raw = struct.unpack_from("<BII", payload, pos)
         pb, rem = divmod(props, 45)
         lp, lc = divmod(rem, 9)
@@ -198,8 +200,10 @@ def unpack(data, limit=256 << 20):
         if raw > need - len(fields) or packed > len(payload) - pos:
             raise ValueError("invalid block")
         if props == 253:
+            if packed < 4:
+                raise ValueError("invalid opcode block")
             encoded, = struct.unpack_from("<I", payload, pos)
-            if packed < 4 or encoded > size:
+            if encoded > size:
                 raise ValueError("invalid opcode block")
             tokens = expand(payload[pos+4:pos+packed], encoded, dict(LZMA, lc=3, lp=0, pb=0))
             fields.extend(opcodes.decode(tokens, raw))

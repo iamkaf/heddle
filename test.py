@@ -373,6 +373,19 @@ dictionary(base + tags[:-1], ops, "incomplete opcode stream")
 # accepted by both readers.
 dictionary(table([row(r) for r in rows] + [row(b"", 9)]) + tags, ops)
 
+# A block's own bytes only: a dictionary block too short for its
+# intermediate size, before another block and at the member's end, and a
+# block header cut short. Python refuses each before reading past it.
+member, _ = dict_member(base + tags, ops)
+head, opcode_block = blocks(member)
+for keep in (0, 2, 3):
+    short_block = [253, opcode_block[1][:keep], opcode_block[2]]
+    agree(regroup(member, [head, short_block, head]), reason="invalid opcode block")
+    agree(regroup(member, [head, short_block]), reason="invalid opcode block")
+for extra in range(1, 9):
+    agree(frame(member[16:] + bytes(extra), *struct.unpack_from("<II", member, 4), b"HDB2"),
+          reason="invalid block")
+
 # HDX2: successive distinct conditional targets, XORed in the scratch.
 jumps = b"".join(b"\x0f\x84" + struct.pack("<i", 7 * i - 20) + b"\x90" for i in range(12))
 fields_x = split.split(jumps, 0, len(jumps))
