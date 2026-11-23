@@ -2,7 +2,7 @@
 
 ![MIT license](https://shieldcn.dev/badge/License-MIT-527a79.svg?variant=secondary)
 
-Heddle groups fields of x86-64 instructions before LZMA compression. It came out of Pinion, a game being built to fit on one floppy. On its core image, the filter saved 94,073 bytes beyond BCJ2.
+Heddle groups fields of x86-64 instructions before LZMA compression. It came out of Pinion, a game being built to fit on one floppy. The original HDL1 measurements below used an earlier core image. The filter saved 94,073 bytes beyond BCJ2.
 
 | Input | Original | Plain LZMA | x86 BCJ + LZMA | BCJ2 + LZMA | Heddle + LZMA |
 |---|---:|---:|---:|---:|---:|
@@ -61,13 +61,15 @@ int restore(const uint8_t *member, uint32_t member_bytes,
 }
 ```
 
-Read the first 16 bytes before sizing buffers. Bytes 0–3 are HDL1. The little-endian u32s at offsets 4 and 8 give output and scratch lengths. Apply the memory budget of your application before allocating. Offset 12 holds CRC32 of the first 12 bytes followed by the compressed payload. Pass the actual available capacities. Use the output only on a zero return. The caller can reuse the scratch immediately, including as zero-filled memory on success.
+Read the first 16 bytes before sizing buffers. The four-byte tag identifies the layout. HDL1 is the original 18-stream member. Version 2 groups 19 fields and uses HDS2 for solid LZMA, HDB2 for independent blocks and HDX2 for blocks with consecutive long conditional targets XORed. The little-endian u32s at offsets 4 and 8 give output and scratch lengths. Apply the memory budget of your application before allocating. Offset 12 holds CRC32 of the first 12 bytes followed by the compressed payload. Pass the actual available capacities. Success clears the used scratch.
 
-Peak storage is the member plus the output plus the scratch plus 16,366 bytes of static decoder state in the measured objects, alignment and a small call stack. Scratch holds the expanded streams, usually output size plus 80 bytes and up to one partial instruction's padding. The buffers must be disjoint and calls serialized. The stored sizes are 32-bit. CRC32 detects accidental damage. The checked API also checks stream boundaries independently of CRC. Builds without HEDDLE_CHECKED expose low-level routines for stubs consuming trusted, preverified streams.
+Each independent block starts with a property byte and two little-endian u32 lengths, compressed and expanded. Normal blocks use the LZMA property byte. Property 253 selects a dictionary of instruction forms. Its payload starts with a u32 intermediate size, then LZMA1 with lc/lp/pb 3/0/0. The decoder borrows the image buffer for this intermediate before reconstructing the fields.
+
+Peak storage is member plus output plus scratch, 16,406 bytes of fixed decoder state on the measured host, and a small call stack. Version 2 scratch usually takes the image size plus 84 bytes and up to one partial instruction's padding. The buffers must be disjoint and calls serialized. The stored sizes are 32-bit. CRC32 detects accidental damage. The checked API also checks stream boundaries independently of CRC. Builds without HEDDLE_CHECKED expose low-level routines for stubs consuming trusted, preverified streams.
 
 ## Why the transform works
 
-An opcode tends to look like another opcode, and stack offsets tend to repeat. Heddle walks the instruction bytes and collects 18 streams for fields such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references to the same target get the same image offset. LZMA sees those repetitions together. The inverse walker makes each choice from bytes it has already restored. An unfamiliar opcode, such as a vector prefix, can throw off instruction alignment and hurt compression. Both walkers still agree, even at a partial final instruction. Every pack checks the split against the Python inverse.
+An opcode tends to look like another opcode, and stack offsets tend to repeat. Heddle walks the instruction bytes and collects 19 streams for fields such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references to the same target get the same image offset. LZMA sees those repetitions together. The inverse walker makes each choice from bytes it has already restored. An unfamiliar opcode, such as a vector prefix, can throw off instruction alignment and hurt compression. Both walkers still agree, even at a partial final instruction. Every pack checks the split against the Python inverse.
 
 BCJ converts branch targets, BCJ2 separates branch operands, and kkrunchy already demonstrated grouping x86 instruction fields for small executables. Heddle applies that approach to x86-64 with a Python packer and a freestanding C inverse. [XZ BCJ](https://tukaani.org/xz/liblzma-api/bcj_8h.html) · [7-Zip BCJ2](https://github.com/ip7z/7zip/blob/main/C/Bcj2.h) · [kkrunchy's filter](https://fgiesen.wordpress.com/2011/01/24/x86-code-compression-in-kkrunchy/)
 

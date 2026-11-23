@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 /* Compile unpack.c and unsplit.c with -DHEDDLE_CHECKED. Little-endian host.
-   Members start with "HDL1", then little-endian u32 output and scratch sizes
+   Members start with a four-byte HDL format identifier, then little-endian u32 output and scratch sizes
    and CRC32. Set your own resource limits before allocating either buffer.
    Pass three disjoint buffers with their actual lengths. Contents of dst
    and scratch are unspecified on error. Success clears the used scratch.

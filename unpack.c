@@ -1,5 +1,5 @@
-/* unpack.c: the one decompressor, raw LZMA (LZMA1) with lc=3, lp=0, pb=2
-   fixed, as Python's lzma module writes it with FORMAT_RAW. Standalone:
+/* Raw LZMA1, as Python writes it with FORMAT_RAW. The solid stream uses
+   lc=3, lp=0, pb=2. Independent blocks can use lc + lp <= 3 and pb <= 4.
    no includes but <stdint.h>, no calls out, integer math only, so the
    self-unpacking executables can reuse it as is.
 
@@ -113,7 +113,8 @@ static unsigned len(uint16_t *q, unsigned ps)
     return 16 + tree(q + 258, 8);
 }
 
-int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
+static int expand(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size,
+                  unsigned lc, unsigned lp, unsigned pb)
 {
     uint32_t out = 0, rep[4] = { 0, 0, 0, 0 }, d, i;
     unsigned state = 0, ps, l, g;
@@ -132,13 +133,14 @@ int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
         p[i] = 1024;
 
     while (out < size) {
-        ps = out & ((1 << PB) - 1);
+        ps = out & ((1u << pb) - 1);
         if (!bit(p + IS_MATCH + state * 16 + ps)) {
             /* A literal. After a match it is coded against the byte at
                rep[0], until the first bit that differs: offs is 0x100 while
                they agree and 0 after. */
             unsigned sym = 1, offs = state >= 7 ? 0x100 : 0, match, b, was;
-            uint16_t *q = p + LIT + 0x300 * ((out ? dst[out - 1] : 0) >> (8 - LC));
+            uint16_t *q = p + LIT + 0x300 * (((out & ((1u << lp) - 1)) << lc)
+                                      + ((out ? dst[out - 1] : 0) >> (8 - lc)));
             match = offs ? dst[out - rep[0] - 1] : 0;
             while (sym < 0x100) {
                 match <<= 1;
@@ -210,14 +212,77 @@ int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
 #endif
 }
 
+int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
+{
+    return expand(src, n, dst, size, LC, 0, PB);
+}
+
 #ifdef HEDDLE_CHECKED
-int heddle_join(uint8_t *, uint32_t, uint8_t *, uint32_t);
+int heddle_join(uint8_t *, uint32_t, uint8_t *, uint32_t, int);
+
+/* The final image buffer is available until heddle_join runs. Use it for
+   the tokenized block so dictionary lookup needs no additional storage. */
+static int opcodes(uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
+{
+    uint16_t count;
+    if (n < 2)
+        return 1;
+    __builtin_memcpy(&count, src, 2);
+    uint32_t pos = 2 + 8u * count, out = 0;
+    if (!count || count > 65025 || pos > n)
+        return 1;
+    unsigned short_tags = 255 - (count - 1) / 255;
+    for (unsigned lane = 0; lane < 8; lane++) {
+        uint8_t *column = src + 2 + lane * count;
+        for (unsigned i = 1; i < count; i++)
+            column[i] += column[i - 1];
+    }
+    while (pos < n) {
+        unsigned tag = src[pos++], extra = 0, length, stride = 1;
+        const uint8_t *bytes;
+        if (!tag || tag > short_tags) {
+            if (pos == n)
+                return 1;
+            extra = src[pos++];
+        }
+        if (!tag) {
+            length = extra;
+            if (length > n - pos)
+                return 1;
+            bytes = src + pos;
+            pos += length;
+        } else {
+            unsigned index = tag - 1;
+            if (tag > short_tags) {
+                unsigned page = index - short_tags;
+                index = short_tags + extra * (255 - short_tags) + page;
+            }
+            if (index >= count)
+                return 1;
+            bytes = src + 2 + index;
+            stride = count;
+            length = *bytes;
+            bytes += stride;
+            if (length > 7)
+                return 1;
+        }
+        if (!length || length > size - out)
+            return 1;
+        for (unsigned j = 0; j < length; j++)
+            dst[out++] = bytes[j * stride];
+    }
+    return out != size;
+}
 
 int heddle_decode(const uint8_t *src, uint32_t bytes, uint8_t *dst,
                   uint32_t capacity, uint8_t *scratch, uint32_t available)
 {
     uint32_t size, need, stored, crc = ~0u;
-    if (bytes < 21 || src[0] != 'H' || src[1] != 'D' || src[2] != 'L' || src[3] != '1')
+    if (bytes < 21 || src[0] != 'H' || src[1] != 'D')
+        return 1;
+    unsigned kind = src[2];
+    if (kind == 'L' ? src[3] != '1' :
+        src[3] != '2' || (kind != 'S' && kind != 'B' && kind != 'X'))
         return 1;
     __builtin_memcpy(&size, src + 4, 4);
     __builtin_memcpy(&need, src + 8, 4);
@@ -231,8 +296,40 @@ int heddle_decode(const uint8_t *src, uint32_t bytes, uint8_t *dst,
         for (unsigned j = 0; j < 8; j++)
             crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1)));
     }
-    if (~crc != stored || pn_unpack(src + 16, bytes - 16, scratch, need))
+    if (~crc != stored)
         return 1;
-    return heddle_join(dst, size, scratch, need);
+    if (kind == 'L' || kind == 'S') {
+        if (pn_unpack(src + 16, bytes - 16, scratch, need))
+            return 1;
+    } else {
+        uint32_t pos = 16, out = 0;
+        while (pos < bytes) {
+            uint32_t packed, raw;
+            if (bytes - pos < 9)
+                return 1;
+            unsigned props = src[pos], lc = props % 9, lp = props / 9 % 5, pb = props / 45;
+            __builtin_memcpy(&packed, src + pos + 1, 4);
+            __builtin_memcpy(&raw, src + pos + 5, 4);
+            pos += 9;
+            if (packed > bytes - pos || raw > need - out)
+                return 1;
+            if (props == 253) {
+                uint32_t encoded;
+                if (packed < 4)
+                    return 1;
+                __builtin_memcpy(&encoded, src + pos, 4);
+                if (encoded > size || expand(src + pos + 4, packed - 4, dst, encoded, 3, 0, 0) ||
+                    opcodes(dst, encoded, scratch + out, raw))
+                    return 1;
+            } else if (pb > 4 || lp + lc > 3 ||
+                expand(src + pos, packed, scratch + out, raw, lc, lp, pb))
+                return 1;
+            pos += packed;
+            out += raw;
+        }
+        if (out != need)
+            return 1;
+    }
+    return heddle_join(dst, size, scratch, need, kind);
 }
 #endif

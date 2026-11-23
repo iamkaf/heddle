@@ -4,7 +4,7 @@
 
 enum {                         /* the streams, in the order they are packed: the best */
     S_SIB, S_J8, S_D8, S_D8S, S_D8L, S_D32, S_D32S, S_D32L, S_RIP, S_I8, S_ISH, S_I32,
-    S_IMR, S_I64, S_JCC, S_JMP, S_CALL, S_OP, NS
+    S_IMR, S_I64, S_JCC, S_JMP, S_CALL, S_MOV, S_OP, NS
 };
 
 /* Each opcode's nibble, the even opcode's in the low half: 8 when a ModRM
@@ -42,6 +42,10 @@ static const uint8_t two[128] BYTES = {
     0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88
 };
 
+static const uint8_t order[NS] BYTES = {
+    S_SIB, S_J8, S_D8, S_D8L, S_D8S, S_D32, S_D32S, S_D32L, S_RIP, S_ISH, S_I8, S_I32, S_IMR, S_I64, S_JCC, S_JMP, S_CALL, S_MOV, S_OP
+};
+
 static uint8_t *dst, *st[NS + 1];     /* the streams, then the data */
 static uint32_t o, lim;
 
@@ -73,7 +77,7 @@ __attribute__((noinline)) static unsigned take(unsigned s, unsigned n)
 }
 
 #ifdef HEDDLE_CHECKED
-int heddle_join(uint8_t *to, uint32_t n, uint8_t *src, uint32_t size)
+int heddle_join(uint8_t *to, uint32_t n, uint8_t *src, uint32_t size, int kind)
 #else
 void pn_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
 #endif
@@ -83,14 +87,17 @@ void pn_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
     unsigned op, code, m, p66, w, esc, s, k;
 
 #ifdef HEDDLE_CHECKED
-    if (size < 4 * (NS + 2) || n > 0xffffff00u)
+    unsigned legacy = kind == 'L';
+    if (size < 4 * (NS + 2 - legacy) || n > 0xffffff00u)
         return 1;
     failed = 0;
+#else
+    const unsigned legacy = 0;
 #endif
-    p = src + 4 * (NS + 2);
+    p = src + 4 * (NS + 2 - legacy);
     dst = to;
     o = 0;
-    for (i = 0; i < NS + 2; i++) {     /* where the code is, then the lengths */
+    for (i = 0; i < NS + 2 - legacy; i++) {     /* where the code is, then the lengths */
         __builtin_memcpy(&v, src + 4 * i, 4);
         __builtin_memcpy(src + 4 * i, &zero, 4);
         if (i == 0)
@@ -98,18 +105,35 @@ void pn_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
         else if (i == 1)
             hi = v;
         else {
-            st[i - 2] = p;
+            unsigned stream = legacy ? i - 2 : order[i - 2];
+            st[stream] = p;
 #ifdef HEDDLE_CHECKED
             if (v > size - (uint32_t)(p - src))
                 return 1;
+            if (kind == 'X' && stream == S_JCC) {
+                if (v % 4)
+                    return 1;
+                uint32_t previous = 0;
+                for (uint32_t j = 0; j < v; j += 4) {
+                    uint32_t value;
+                    __builtin_memcpy(&value, p + j, 4);
+                    previous ^= value;
+                    __builtin_memcpy(p + j, &previous, 4);
+                }
+            }
 #endif
             p += v;
 #ifdef HEDDLE_CHECKED
-            end[i - 2] = p;
+            end[stream] = p;
 #endif
         }
     }
 #ifdef HEDDLE_CHECKED
+    if (legacy) {
+        st[S_OP] = st[S_MOV];
+        end[S_OP] = end[S_MOV];
+        end[S_MOV] = st[S_MOV];
+    }
     if (lo > hi || hi > n || size - (uint32_t)(p - src) != n - (hi - lo))
         return 1;
     end[NS] = src + size;
@@ -164,7 +188,7 @@ void pn_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
         if (code == 7)
             code = m >> 3 & 6 ? 0 : op == 0xF6 ? 1 : 2;
         k = 4;
-        s = S_I32;
+        s = !legacy && op == 0xc7 ? S_MOV : S_I32;
         if (code == 1 || code == 4)
             k = 1, s = code == 4 ? S_J8 : (op & 0xFE) == 0xC0 ? S_ISH : S_I8;
         else if (code == 2)

@@ -6,8 +6,10 @@ import sys
 
 NICE = 96
 
-NS = 18                                 # the streams, in the order they are packed: the best
-SIB, J8, D8, D8S, D8L, D32, D32S, D32L, RIP, I8, ISH, I32, IMR, I64, JCC, JMP, CALL, OP = range(NS)
+NS = 19                                 # the streams, in the order they are packed: the best
+SIB, J8, D8, D8S, D8L, D32, D32S, D32L, RIP, I8, ISH, I32, IMR, I64, JCC, JMP, CALL, MOV, OP = range(NS)
+
+ORDER = (SIB, J8, D8, D8L, D8S, D32, D32S, D32L, RIP, ISH, I8, I32, IMR, I64, JCC, JMP, CALL, MOV, OP)
 
 PREFIX = (0x66, 0x67, 0xF2, 0xF3, 0xF0, 0x2E, 0x3E, 0x26, 0x64, 0x65, 0x36)
 
@@ -52,7 +54,7 @@ def nibbles(t):
     return bytes(t.get(2 * i, 0) | t.get(2 * i + 1, 0) << 4 for i in range(128))
 
 
-def walk(take):
+def walk(take, mov=True):
     """One instruction, as unsplit.c reads it: take(stream, n) moves its
     next n bytes and gives the last. Returns where its call or RIP-relative
     field is from the instruction's start and its stream, (None, None) if
@@ -106,7 +108,7 @@ def walk(take):
     if kind == 1:                       # a shift's count apart
         part(ISH if op & 0xFE == 0xC0 else I8, 1)
     elif kind == 2:
-        part(I32, 2 if p66 else 4)
+        part(MOV if mov and op == 0xc7 else I32, 2 if p66 else 4)
     elif kind == 3:                     # MOV r, imm apart
         part(I64 if w else IMR, 8 if w else 2 if p66 else 4)
     elif kind == 4:
@@ -122,7 +124,7 @@ def walk(take):
     return at, s, k
 
 
-def split(mem, lo, hi):
+def split(mem, lo, hi, tokens=None):
     """mem's code, mem[lo:hi], split; the rest of it, its data, as it is."""
     mem = bytes(mem)
     if not 0 <= lo <= hi <= len(mem) <= 0xffffff00:
@@ -141,10 +143,14 @@ def split(mem, lo, hi):
 
     while o < size:
         start = o
+        op_start = len(streams[OP])
         at, s, n = walk(take)
+        if tokens is not None:
+            tokens.append(bytes(streams[OP][op_start:]))
         if at is not None and start + n <= size:
             v = struct.unpack_from("<I", padded, start + at)[0]
             struct.pack_into("<I", streams[s], last[s], (v + lo + start + n) & 0xFFFFFFFF)
+    streams = [streams[i] for i in ORDER]
     data = (struct.pack(f"<{NS + 2}I", lo, hi, *map(len, streams)) + b"".join(streams)
             + mem[:lo] + mem[hi:])
     if join(data, len(mem)) != mem:
@@ -152,15 +158,19 @@ def split(mem, lo, hi):
     return data
 
 
-def join(data, n):
+def join(data, n, legacy=False):
+    if legacy:
+        at = 8 + 4 * MOV
+        data = data[:at] + bytes(4) + data[at:]
     lo, hi, *lens = struct.unpack_from(f"<{NS + 2}I", data)
     if not 0 <= lo <= hi <= n <= 0xffffff00:
         raise ValueError("invalid code bounds")
-    pos, ends, at = [], [], 4 * (NS + 2)
-    for k in lens:
-        pos.append(at)
+    at = 4 * (NS + 2)
+    pos, ends = [0] * NS, [0] * NS
+    for i, k in zip(range(NS) if legacy else ORDER, lens):
+        pos[i] = at
         at += k
-        ends.append(at)
+        ends[i] = at
     if at + n - (hi - lo) != len(data):
         raise ValueError("invalid stream lengths")
     raw = data[at:]
@@ -175,7 +185,7 @@ def join(data, n):
 
     while len(out) < hi:
         start = len(out)
-        f, s, k = walk(take)
+        f, s, k = walk(take, mov=not legacy)
         if f is not None and start + k <= hi:
             v = struct.unpack_from("<I", out, start + f)[0]
             struct.pack_into("<I", out, start + f, (v - start - k) & 0xFFFFFFFF)
