@@ -36,8 +36,18 @@ static uint16_t p[NPROBS];
 static const uint8_t *in;
 static uint32_t inlen, inpos, range, code;
 
+#ifdef HEDDLE_CHECKED
+static int short_input;
+#endif
+
 static uint32_t next(void)
 {
+#ifdef HEDDLE_CHECKED
+    if (inpos >= inlen) {
+        short_input = 1;
+        return 0;
+    }
+#endif
     uint32_t b = inpos < inlen ? in[inpos] : 0;
     inpos++;
     return b;
@@ -108,6 +118,9 @@ int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
     uint32_t out = 0, rep[4] = { 0, 0, 0, 0 }, d, i;
     unsigned state = 0, ps, l, g;
 
+#ifdef HEDDLE_CHECKED
+    short_input = 0;
+#endif
     in = src;
     inlen = n;
     inpos = 1;                 /* the first byte is always 0 */
@@ -190,7 +203,11 @@ int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
         for (l += 2; l-- && out < size; out++)
             dst[out] = dst[out - d - 1];
     }
+#ifdef HEDDLE_CHECKED
+    return short_input;
+#else
     return inpos > n;
+#endif
 }
 
 #ifdef HEDDLE_CHECKED
