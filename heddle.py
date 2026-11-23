@@ -118,7 +118,24 @@ def grouped(fields, profile, size, tokens):
     return bytes(payload), used_xor
 
 
+# A member's header names no LZMA settings: both readers decode a solid
+# member with lc/lp/pb 3/0/2 and every stream with an 8 MiB window, so a
+# profile may change only how hard the encoder looks.
+PRESET_DICT = (1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 22, 1 << 23, 1 << 23, 1 << 24, 1 << 25, 1 << 26)
+
+
+def check_profile(profile):
+    level = profile.get("preset", 6) & 0x1F
+    if profile.get("id") != lzma.FILTER_LZMA1 or level > 9:
+        raise ValueError("a profile is one LZMA1 filter")
+    if profile.get("dict_size", PRESET_DICT[level]) > 1 << 23:
+        raise ValueError("a profile's dict_size is at most 8 MiB, the readers' window")
+    if (profile.get("lc", 3), profile.get("lp", 0), profile.get("pb", 2)) != (3, 0, 2):
+        raise ValueError("a profile keeps lc/lp/pb 3/0/2, which the readers assume")
+
+
 def member(fields, size, profile=LZMA, tokens=None):
+    check_profile(profile)
     payload = compress(fields, [profile])
     magic = b"HDS2"
     # Very small members cannot recover the block headers.

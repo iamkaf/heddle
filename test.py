@@ -70,6 +70,20 @@ grouped = []
 for name in sys.argv[1:] or ["/usr/bin/true", "/usr/bin/ls", "/usr/bin/sed", "/usr/bin/xz"]:
     path, *bounds = name.rsplit(":", 2)
     valid(Path(path).read_bytes(), tuple(int(i, 0) for i in bounds) or None)
+# A profile changes only the encoder's effort: settings the header cannot
+# carry are refused before anything is written.
+small = split.split(bytes(range(256)), 3, 250)
+for profile in (heddle.LZMA, heddle.CORE_LZMA, dict(id=lzma.FILTER_LZMA1, preset=3),
+                dict(heddle.CORE_LZMA, lc=3, lp=0, pb=2), dict(heddle.LZMA, dict_size=1 << 23)):
+    assert heddle.unpack(heddle.member(small, 256, profile)) == bytes(range(256))
+for profile, reason in ((dict(heddle.LZMA, lc=4), "lc/lp/pb"), (dict(heddle.LZMA, lp=1, lc=2), "lc/lp/pb"),
+                        (dict(heddle.LZMA, pb=0), "lc/lp/pb"), (dict(heddle.LZMA, dict_size=(1 << 23) + 1), "8 MiB"),
+                        (dict(id=lzma.FILTER_LZMA1, preset=9), "8 MiB"), (dict(heddle.LZMA, id=lzma.FILTER_LZMA2), "LZMA1")):
+    try:
+        heddle.member(small, 256, profile)
+        raise AssertionError(f"wrote a member with {profile}")
+    except ValueError as exc:
+        assert reason in str(exc), exc
 for n in range(64):
     data = rng.randbytes(n)
     lo = rng.randrange(n + 1)
