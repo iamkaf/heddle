@@ -148,6 +148,16 @@ class Encoder:
         self.rep.insert(0, d)
         self._copy(d, length)
 
+    def short_rep(self):
+        """One byte from the latest distance."""
+        ps = self._ps()
+        self._bit(IS_MATCH + self.state * 16 + ps, 1)
+        self._bit(IS_REP + self.state, 1)
+        self._bit(IS_REP_G0 + self.state, 0)
+        self._bit(IS_REP0_LONG + self.state * 16 + ps, 0)
+        self.state = 9 if self.state < 7 else 11
+        self._copy(self.rep[0], 1)
+
     def end(self, length=2):
         """The end marker: a new match at distance 2**32 - 1."""
         before = len(self.data)

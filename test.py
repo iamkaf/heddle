@@ -200,12 +200,18 @@ for tail in range(1, 4):                # a match running past the end
     e.match(31, 2 + tail)
     e.end()
     agree(solid(e.finish(), image), reason="length")
-e = lzma1.Encoder()                     # a short rep past the end
+for more in (lambda e: e.rep_match(0, 2), lambda e: e.short_rep()):
+    e = lzma1.Encoder()                 # a rep, long or short, past the end
+    for b in fields0:
+        e.literal(b)
+    more(e)
+    e.end()
+    agree(solid(e.finish(), image), reason="length")
+e = lzma1.Encoder()                     # a bad distance where the marker goes
 for b in fields0:
     e.literal(b)
-e.rep_match(0, 2)
-e.end()
-agree(solid(e.finish(), image), reason="length")
+e.match(len(fields0), 2)
+agree(solid(e.finish(), image), reason="stream")
 for d, ok in ((83 + len(image), True), (84 + len(image), False)):
     e = lzma1.Encoder()                 # the furthest distance, and one past
     for b in fields0:
@@ -235,32 +241,149 @@ for broken in (block[:8], block[:-1], bytes([255]) + block[1:], block + block,
                struct.pack("<BII", 93, len(payload), need + 1) + payload):
     case(frame(broken, len(data), need, b"HDB2"), len(data), need, 1)
 # A dictionary block expands into the destination first, then the split
-# scratch. Recompute checksums so damaged tags reach the opcode inverse.
+# scratch. Each case below is a complete member whose framing a correct
+# dictionary would satisfy, so a refusal can only come from the dictionary,
+# and Python must refuse for the reason the case names.
 def dictionary_block(tokens, raw):
     packed = heddle.compress(tokens, [dict(heddle.LZMA, pb=0)])
     return struct.pack("<BIII", 253, 4 + len(packed), raw, len(tokens)) + packed
 
 
-for tokens in (b"", b"\0\0", b"\1\0", b"\1\0" + bytes(8) + b"\x01",
-               b"\1\0" + bytes(8) + b"\x02", b"\1\0" + bytes(8) + b"\0\xff",
-               b"\xff\0" + bytes(2040) + b"\0", b"\1\0\x08" + bytes(7) + b"\x01"):
-    bad = dictionary_block(tokens, 1)
-    case(frame(bad, 4096, 80, b"HDB2"), 4096, 80, 1)
-# A hand-built v2 member with a one-entry dictionary of NOPs. Both
-# blocks are needed for a complete round trip; changing the last tag to
-# an absent entry preserves all framing and invalidates only the lookup.
+# One-byte opcodes the walker takes alone, to spell distinct rows with.
+BARE = [b for b in range(256) if not split.ONE.get(b) and b not in split.PREFIX
+        and b & 0xF0 != 0x40 and b != 0x0F]
+
+
+def form(i, width=3):
+    return bytes(BARE[i // len(BARE) ** k % len(BARE)] for k in range(width))
+
+
+def row(body, length=None):
+    return bytes([len(body) if length is None else length]) + body.ljust(7, b"\0")
+
+
+def table(rows, count=None):
+    """The count, then each of the eight columns of the rows, delta coded."""
+    data = bytearray(struct.pack("<H", len(rows) if count is None else count))
+    for lane in range(8):
+        column = [r[lane] for r in rows]
+        data.extend(column[:1])
+        data.extend((b - a) & 255 for a, b in zip(column, column[1:]))
+    return bytes(data)
+
+
+def tag(index, count):
+    """What opcodes.encode writes for row index of count."""
+    short = 255 - (count - 1) // 255
+    if index < short:
+        return bytes([index + 1])
+    offset, page = divmod(index - short, 255 - short)
+    return bytes([short + 1 + page, offset])
+
+
+def dict_member(tokens, ops, magic=b"HDB2"):
+    """An image of ops as code, padded with data so the intermediate fits."""
+    pad = max(0, len(tokens) - len(ops))
+    fields = split.split(ops + bytes(pad), 0, len(ops))
+    head = fields[:84]
+    blocks = struct.pack("<BII", 93, len(heddle.compress(head)), 84) + heddle.compress(head)
+    blocks += dictionary_block(tokens, len(ops))
+    if pad:
+        tail = heddle.compress(bytes(pad), [dict(heddle.LZMA, lc=0, lp=1)])
+        blocks += struct.pack("<BII", 99, len(tail), pad) + tail
+    return frame(blocks, len(ops) + pad, len(fields), magic), ops + bytes(pad)
+
+
+def dictionary(tokens, ops, reason=None):
+    member, image = dict_member(tokens, ops)
+    agree(member, None if reason else image, reason)
+
+
+def lookup(tokens, index):
+    """What a reader without the index and length checks would copy for a
+    tag naming index: the decoders' own column walk, unbounded."""
+    count, = struct.unpack_from("<H", tokens)
+    columns = bytearray(tokens)
+    for lane in range(8):
+        for i in range(1, count):
+            at = 2 + lane * count + i
+            columns[at] = (columns[at] + columns[at - 1]) & 255
+    return bytes(columns[2 + index + count * (j + 1)] for j in range(columns[2 + index]))
+
+
+# A one-entry dictionary of NOPs: each of 64 tags expands to two.
 nops = bytes([0x90]) * 128
-fields_nop = split.split(nops, 0, len(nops))
-prefix = fields_nop[:-len(nops)]
-compressed = heddle.compress(prefix)
-block_header = struct.pack("<BII", 93, len(compressed), len(prefix)) + compressed
-# Each of 64 tags expands to two NOPs.
-tokens = bytes.fromhex("0100 02 9090 0000000000") + bytes([1]) * 64
-member_nop = frame(block_header + dictionary_block(tokens, 128), 128, len(fields_nop), b"HDB2")
-assert heddle.unpack(member_nop) == nops
-case(member_nop, 128, len(fields_nop), 0, nops)
-broken = block_header + dictionary_block(tokens[:-1] + bytes([2]), 128)
-case(frame(broken, 128, len(fields_nop), b"HDB2"), 128, len(fields_nop), 1)
+dictionary(table([row(b"\x90\x90")]) + bytes([1]) * 64, nops)
+# The first long tag at 256 entries, the last valid index and the first
+# unused. Row 0 starts with 6, so index 256, read unchecked, is a valid
+# six-byte row.
+rows = [b"\x06\x90\x90"] + [form(i, 1 + i % 3) for i in range(1, 256)]
+full = table([row(r) for r in rows])
+picks = (0, 253, 254, 255)
+dictionary(full + b"".join(tag(i, 256) for i in picks), b"".join(rows[i] for i in picks))
+assert tag(254, 256) == b"\xff\0" and tag(255, 256) == b"\xff\1"
+tokens = full + tag(0, 256) + b"\xff\2"
+dictionary(tokens, rows[0] + lookup(tokens, 256), "invalid opcode index")
+# Interleaved pages: at 1,000 entries, 252 short tags and three long ones
+# whose second byte steps through the rows three at a time.
+rows = [form(i) for i in range(1000)]
+picks = (251, 252, 253, 254, 255, 256, 600, 998, 999)
+assert [tag(i, 1000) for i in (252, 253, 255, 999)] == [b"\xfd\0", b"\xfe\0", b"\xfd\1", b"\xfd\xf9"]
+full = table([row(r) for r in rows])
+dictionary(full + b"".join(tag(i, 1000) for i in picks), b"".join(rows[i] for i in picks))
+dictionary(full + b"\xfe\xf9", lookup(full, 1000), "invalid opcode index")
+# The wire limit: 65,025 entries, one short tag and 254 pages of long ones;
+# one more entry, with the tags that count would have, is refused.
+rows = [form(i) for i in range(65026)]
+picks = (0, 1, 254, 255, 32768, 65024)
+assert tag(65024, 65025) == b"\xff\xff"
+ops = b"".join(rows[i] for i in picks)
+dictionary(table([row(r) for r in rows[:65025]]) + b"".join(tag(i, 65025) for i in picks), ops)
+dictionary(table([row(r) for r in rows]) + b"".join(tag(i, 65026) for i in picks), ops, "invalid opcode dictionary")
+
+# One defect each, in a member that would otherwise decode to ops. The
+# tags outnumber the table, so the dictionary block is the member's last
+# and an overrun reaches past the scratch.
+rows = [form(i, 2) for i in range(3)]
+base = table([row(r) for r in rows])
+tags = bytes([1, 2, 3, 2]) * 8
+ops = (rows[0] + rows[1] + rows[2] + rows[1]) * 8
+assert len(base + tags) <= len(ops)
+dictionary(base + tags, ops)
+dictionary(b"\1", ops[:1], "invalid opcode dictionary")
+dictionary(b"\0\0" + b"\0" + bytes([len(ops)]) + ops, ops, "invalid opcode dictionary")
+dictionary(base[:-1], rows[0], "invalid opcode dictionary")  # the image is no longer than the block
+dictionary(base + tags + b"\0", ops, "truncated opcode tag")
+long_table = table([row(form(i)) for i in range(256)])
+dictionary(long_table + tag(0, 256) * 260 + b"\xff", form(0) * 260, "truncated opcode tag")
+short = bytes([1, 2, 3, 2]) * 6 + bytes([1, 2, 3])
+tokens = base + short + b"\0\2" + rows[1][:1]
+dictionary(tokens, ops[:2 * len(short)] + rows[1][:1] + b"\x90", "invalid opcode span")
+assert len(tokens) == 2 * len(short) + 2      # so the byte after is past the image
+dictionary(base + tags[:2] + b"\0\0" + tags[2:], ops, "invalid opcode span")
+dictionary(table([row(r) for r in rows] + [row(b"", 0)]) + tags[:2] + b"\4" + tags[2:], ops, "invalid opcode span")
+# An eight-byte row reads its last byte from the tags: tags[6], a 6 here,
+# which is an opcode without operands.
+seven = [form(i, 2) for i in range(6)]
+tokens = table([row(r) for r in seven] + [row(form(9, 7), 8)]) + bytes([1, 2, 3, 4, 5, 6, 6]) + b"\7"
+dictionary(tokens, b"".join(seven[t - 1] for t in (1, 2, 3, 4, 5, 6, 6)) + lookup(tokens, 6), "invalid opcode length")
+dictionary(base + tags + b"\1", ops, "invalid opcode span")
+dictionary(base + tags[:-1], ops, "incomplete opcode stream")
+# Rows are checked when a tag uses them: an unused malformed row is
+# accepted by both readers.
+dictionary(table([row(r) for r in rows] + [row(b"", 9)]) + tags, ops)
+
+# HDX2: successive distinct conditional targets, XORed in the scratch.
+jumps = b"".join(b"\x0f\x84" + struct.pack("<i", 7 * i - 20) + b"\x90" for i in range(12))
+fields_x = split.split(jumps, 0, len(jumps))
+xored = bytes(heddle.jcc_xor(fields_x))
+assert xored != fields_x
+packed_x = heddle.compress(xored)
+member_x = frame(struct.pack("<BII", 93, len(packed_x), len(xored)) + packed_x,
+                 len(jumps), len(xored), b"HDX2")
+agree(member_x, jumps)
+same(b"HDB2" + member_x[4:12] + struct.pack("<I", zlib.crc32(member_x[16:], zlib.crc32(b"HDB2" + member_x[4:12])))
+     + member_x[16:])
 
 # Legacy layout stores C7 immediates in I32 and has no MOV length word.
 legacy_image = bytes.fromhex("c7 c0 78 56 34 12")

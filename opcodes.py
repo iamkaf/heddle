@@ -51,6 +51,8 @@ def emit_literals(data, literals):
 
 
 def decode(data, size):
+    if len(data) < 2:
+        raise ValueError("invalid opcode dictionary")
     count, = struct.unpack_from("<H", data)
     pos = 2 + 8 * count
     if not 0 < count <= 65025 or pos > len(data):
