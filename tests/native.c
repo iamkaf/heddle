@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../heddle.h"
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 static void read_bytes(void *p, size_t n)
 {
@@ -14,6 +18,9 @@ static void read_bytes(void *p, size_t n)
 int main(void)
 {
     uint32_t h[4], index = 0;
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);   /* the cases are bytes */
+#endif
     while (fread(h, sizeof h, 1, stdin) == 1) {
         uint8_t *in = malloc(h[0]), *dst = malloc(h[1]), *tmp = malloc(h[2]);
         uint8_t *expected = malloc(h[1]);

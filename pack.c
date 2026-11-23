@@ -9,6 +9,8 @@
    lzma/LzFind.c, liblzma compresses, and the members are the Python
    packer's byte for byte, given the same setting (PROFILE in tests/pack.py). */
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE               /* macOS: mkdtemp, which POSIX has but Apple hides */
+#define _CRT_SECURE_NO_WARNINGS        /* MSVC: fopen, strerror and getenv are fine */
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>

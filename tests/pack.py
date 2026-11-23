@@ -2,7 +2,8 @@
 FILE:LO:HI (file offsets).
 
 Builds pack.c with AddressSanitizer and UndefinedBehaviorSanitizer, and
-again with liblzma when its header is installed. For every input, the C
+again with liblzma when its header is installed; with CC=cl, MSVC's
+AddressSanitizer alone. The first input is the program compare is tried on. For every input, the C
 member's fields equal the Python split's byte for byte, its opcode
 dictionary (if it chose one) is opcodes.encode's, both readers read the
 other packer's members, and the liblzma build's members are the Python
@@ -30,24 +31,32 @@ PROFILE = dict(heddle.CORE_LZMA, dict_size=1 << 23)
 cc = os.environ.get("CC", "cc")
 tmp = Path(tempfile.mkdtemp())
 atexit.register(shutil.rmtree, tmp)
-flags = [cc, "-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-# LZMA SDK 9.20 calls its match finder through function pointers whose
-# parameter it casts to void *; clang's function check, which GCC has not,
-# is left out for those three files alone.
-sdk = flags + ["-fno-sanitize=function"] * ("clang" in Path(cc).name)
-objects = []
-for source in ("LzmaEnc.c", "LzFind.c", "Bra86.c"):
-    objects.append(tmp / (source + ".o"))
-    subprocess.run([*sdk, "-D_7ZIP_ST", "-c", here / "lzma" / source, "-o", objects[-1]], check=True)
-ours = [*flags, "-Wall", "-Wextra", "-Werror", "-DHEDDLE_CHECKED", here / "pack.c", here / "unpack.c",
-        here / "unsplit.c"]
+ours = [here / "pack.c", here / "unpack.c", here / "unsplit.c"]
 packers = {"sdk": tmp / "heddle"}
-subprocess.run([*ours, "-D_7ZIP_ST", *objects, "-o", packers["sdk"]], check=True)
-if subprocess.run([*ours, "-DHEDDLE_LIBLZMA", objects[2], "-llzma", "-o", tmp / "heddle-xz"],
-                  capture_output=True).returncode == 0:
-    packers["liblzma"] = tmp / "heddle-xz"
+if Path(cc).stem.lower() == "cl":
+    flags = [cc, "/nologo", "/std:c11", "/O1", "/Zi", "/fsanitize=address", "/D_7ZIP_ST", f"/Fo{tmp}\\",
+             f"/Fd{tmp}\\"]
+    objects = [tmp / (source + ".obj") for source in ("LzmaEnc", "LzFind", "Bra86")]
+    subprocess.run([*flags, "/c", *(here / "lzma" / (o.stem + ".c") for o in objects)], check=True)
+    subprocess.run([*flags, "/W4", "/WX", "/DHEDDLE_CHECKED", *ours, *objects, f"/Fe{packers['sdk']}"],
+                   check=True)
 else:
-    print("liblzma: no header or library, so its build is not tested")
+    flags = [cc, "-std=c11", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
+    # LZMA SDK 9.20 calls its match finder through function pointers whose
+    # parameter it casts to void *; clang's function check, which GCC has
+    # not, is left out for those three files alone.
+    sdk = flags + ["-fno-sanitize=function"] * ("clang" in Path(cc).name)
+    objects = []
+    for source in ("LzmaEnc.c", "LzFind.c", "Bra86.c"):
+        objects.append(tmp / (source + ".o"))
+        subprocess.run([*sdk, "-D_7ZIP_ST", "-c", here / "lzma" / source, "-o", objects[-1]], check=True)
+    ours = [*flags, "-Wall", "-Wextra", "-Werror", "-DHEDDLE_CHECKED", *ours]
+    subprocess.run([*ours, "-D_7ZIP_ST", *objects, "-o", packers["sdk"]], check=True)
+    if subprocess.run([*ours, "-DHEDDLE_LIBLZMA", objects[2], "-llzma", "-o", tmp / "heddle-xz"],
+                      capture_output=True).returncode == 0:
+        packers["liblzma"] = tmp / "heddle-xz"
+if "liblzma" not in packers:
+    print("liblzma: not built here, so its build is not tested")
 
 
 def run(packer, *args, ok=True):
@@ -56,6 +65,7 @@ def run(packer, *args, ok=True):
     r = subprocess.run([packers[packer], *map(str, args)], capture_output=True, env=env)
     if ok and r.returncode:
         sys.exit(f"{packer} {' '.join(map(str, args))}: {r.stderr.decode()}")
+    r.stderr = r.stderr.replace(b"\r\n", b"\n")
     return r
 
 
@@ -103,9 +113,16 @@ def check(name, data, bounds=None):
     return member
 
 
-for name in sys.argv[1:] or ["/usr/bin/true", "/usr/bin/ls", "/usr/bin/sed", "/usr/bin/xz"]:
-    path, *bounds = name.rsplit(":", 2)
-    check(name, Path(path).read_bytes(), tuple(int(i, 0) for i in bounds) or None)
+system = os.environ.get("SystemRoot", "C:/Windows") + "/System32/"
+programs = sys.argv[1:] or ([system + name for name in ("notepad.exe", "cmd.exe", "kernel32.dll")]
+                            if os.name == "nt" else ["/usr/bin/ls", "/usr/bin/true", "/usr/bin/sed", "/usr/bin/xz"])
+for i, name in enumerate(programs):
+    parts = name.rsplit(":", 2)          # FILE:LO:HI, FILE a Windows path too
+    path, bounds = (parts[0], parts[1:]) if len(parts) == 3 else (name, [])
+    bounds = tuple(int(b, 0) for b in bounds) or None
+    check(name, Path(path).read_bytes(), bounds)
+    if i == 0:
+        sample, sample_code = path, bounds
 
 rng = random.Random(3801)
 for n in range(64):
@@ -139,12 +156,15 @@ def pe(text, machine=0x8664, name=b".text\0\0\0", sections=1):
     return bytes(head.ljust(512, b"\0")) + text
 
 
-ls = Path("/usr/bin/ls").read_bytes()
-lo, hi = heddle.code_bounds(ls)
-text = ls[lo:lo + 32768]
+real = Path(sample).read_bytes()
+lo, hi = sample_code or heddle.code_bounds(real)
+text = real[lo:min(hi, lo + 32768)]
 check("PE", pe(text))
-elf = bytearray(ls)
-struct.pack_into("<H", elf, 62, 0xFFFF)
+elf = bytearray(64)                     # a string table past the section count
+elf[:6] = b"\x7fELF\x02\x01"
+struct.pack_into("<H", elf, 18, 62)
+struct.pack_into("<Q", elf, 40, 64)
+struct.pack_into("<HHH", elf, 58, 64, 1, 1)
 for data in (pe(text, machine=0x14C), pe(text, name=b".data\0\0\0"), pe(text, sections=0), bytes(elf),
              b"not a program"):
     try:
@@ -173,13 +193,14 @@ assert r.returncode == 1 and r.stderr == b"heddle: invalid member\n", r.stderr
 # Compare: the heddle column is the member's payload; with liblzma, the
 # LZMA and x86 BCJ columns are liblzma's with the same setting, so the
 # SDK's x86 converter is liblzma's. BCJ2 is 7-Zip's, as Python asks it.
-data = Path("/usr/bin/ls").read_bytes()
-python = heddle.compare(data)
+data = Path(sample).read_bytes()
+python = heddle.compare(data, sample_code)
+code = ["--code", *sample_code] if sample_code else []
 for packer in packers:
-    head, row = run(packer, "compare", "/usr/bin/ls").stdout.decode().splitlines()
+    head, row = run(packer, "compare", sample, *code).stdout.decode().splitlines()
     assert head == "input\tLZMA\tx86 BCJ\tBCJ2\theddle", head
     row = row.split("\t")
-    run(packer, "pack", "/usr/bin/ls", tmp / "member")
+    run(packer, "pack", sample, tmp / "member", *code)
     assert int(row[0]) == len(data) and int(row[4]) == len((tmp / "member").read_bytes()) - 16, row
     assert row[3] == str(python[3]) if python[3] is not None else row[3] == "n/a", (row, python)
     if packer == "liblzma":

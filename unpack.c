@@ -16,6 +16,11 @@
    probabilities are static: a stack that big would need a stack probe. */
 
 #include <stdint.h>
+#ifdef _MSC_VER                /* MSVC, for the packer: its own words for the same */
+#include <string.h>
+#define __builtin_memcpy memcpy
+#define __attribute__(x)
+#endif
 
 #define LC 3                   /* literal context: the previous byte's top bits */
 #define PB 2                   /* position bits for the match and length contexts */

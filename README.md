@@ -31,7 +31,7 @@ Decoder bytes are x86-64 GCC 16.2 with `-Os -ffreestanding -fno-asynchronous-unw
 
 ## Try a file
 
-The packer is `pack.c`, in C11, with the LZMA encoder in `lzma/`. Install nothing: one line builds it. It is written for GCC, Clang and MinGW, and has been built and run on Linux only. Run these commands from the checkout.
+The packer is `pack.c`, in C11, with the LZMA encoder in `lzma/`. Install nothing: one line builds it, with GCC or Clang on Linux and with Apple's clang on macOS (an arm64 Mac packs x86-64 code alike). Run these commands from the checkout.
 
 ```sh
 cc -O2 -DHEDDLE_CHECKED -D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c -o heddle
@@ -40,6 +40,12 @@ cc -O2 -DHEDDLE_CHECKED -D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma
 ./heddle unpack ls.hdl ls.out
 cmp /usr/bin/ls ls.out
 ./heddle pack image.bin image.hdl --code 0x2000 0x8000
+```
+
+On Windows, MSVC builds it from a Developer Command Prompt (Visual Studio 2022's Build Tools); MinGW has not been tried.
+
+```bat
+cl /O2 /DHEDDLE_CHECKED /D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c /Fe:heddle.exe
 ```
 
 The command detects little-endian x86-64 ELF or PE files with a .text section. Specify file offsets for stripped section tables and raw blobs. The lower bound is inclusive and the upper bound exclusive. Compare uses the installed 7z or 7zz if available. Every pack reads its member back with the C reader before writing it. Unpacking restores the file contents. File permissions belong to the caller.
@@ -80,8 +86,8 @@ BCJ converts branch targets, BCJ2 separates branch operands, and kkrunchy alread
 
 ## Run the native tests
 
-`CC=clang python3 test.py` compiles the public decoder with AddressSanitizer and UndefinedBehaviorSanitizer. It round-trips local binaries, partial instructions and random ranges, verifies scratch clearing, reads a version 1 member from the released writer, and exercises damaged members, invalid sizes and malformed inner streams with recomputed checksums. Every damaged member must get the same verdict from the Python and C readers. `tests/lzma1.py` writes exact LZMA symbol sequences for both sides of the whole-stream rule. Supply other files as arguments, with raw images written as FILE:LO:HI.
+`CC=clang python3 test.py` compiles the public decoder with AddressSanitizer and UndefinedBehaviorSanitizer. It round-trips local binaries, partial instructions and random ranges, verifies scratch clearing, reads a version 1 member from the released writer, and exercises damaged members, invalid sizes and malformed inner streams with recomputed checksums. Every damaged member must get the same verdict from the Python and C readers. `tests/lzma1.py` writes exact LZMA symbol sequences for both sides of the whole-stream rule. Supply other files as arguments, with raw images written as FILE:LO:HI: on macOS, whose programs are Mach-O, an x86-64 slice (`lipo -thin x86_64`) with its `__text` bounds. With `CC=cl`, in a Developer Command Prompt, it builds with MSVC and its AddressSanitizer, which has no UndefinedBehaviorSanitizer.
 
-`CC=clang python3 tests/pack.py` builds the C packer with both sanitizers, and with liblzma where it is installed, and holds it to the Python packer: on every input its fields equal the Python split's byte for byte, its opcode dictionary is `opcodes.encode`'s, each packer's members read with the other's reader, the liblzma build's members are the Python packer's, and malformed headers are refused in the same words. It takes the same arguments as test.py, and about 20 seconds.
+`CC=clang python3 tests/pack.py` builds the C packer with both sanitizers, and with liblzma where it is installed, and holds it to the Python packer: on every input its fields equal the Python split's byte for byte, its opcode dictionary is `opcodes.encode`'s, each packer's members read with the other's reader, the liblzma build's members are the Python packer's, and malformed headers are refused in the same words. It takes the same arguments as test.py, and `CC=cl` too, the first input being the program compare is tried on, and about 20 seconds.
 
-`python3 tests/mutate.py` removes each check of the two readers in turn and requires test.py to fail, so every check has a test of its own. It takes about a minute and a half.
+`python3 tests/mutate.py` runs test.py, which must pass, then removes each check of the two readers in turn and requires test.py to fail, so every check has a test of its own. It takes test.py's arguments. It takes about a minute and a half.

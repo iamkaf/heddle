@@ -50,13 +50,26 @@ with tempfile.TemporaryDirectory() as tmp:
     for name in ("heddle.py", "opcodes.py", "split.py", "unpack.c", "unsplit.c", "heddle.h", "test.py"):
         shutil.copy(here / name, tmp)
     shutil.copytree(here / "tests", Path(tmp) / "tests")
+    # The copy runs elsewhere: inputs by their full paths, FILE:LO:HI kept.
+    inputs = []
+    for name in sys.argv[1:]:
+        parts = name.rsplit(":", 2)
+        path, bounds = (parts[0], parts[1:]) if len(parts) == 3 else (name, [])
+        inputs.append(":".join([str(Path(path).resolve()), *bounds]))
+
+    def test():
+        return subprocess.run([sys.executable, "test.py", *inputs], cwd=tmp, capture_output=True,
+                              env=dict(os.environ, CC=os.environ.get("CC", "clang")))
+
+    first = test()                      # unchanged, it passes, so a failure below is the mutation's
+    if first.returncode:
+        sys.exit("test.py fails unchanged:\n" + first.stderr.decode()[-2000:])
     for path, mutations in (("unpack.c", C), ("opcodes.py", PY)):
         source = (Path(tmp) / path).read_text()
         for what, (old, new) in mutations.items():
             assert source.count(old) == 1, what
             (Path(tmp) / path).write_text(source.replace(old, new))
-            run = subprocess.run([sys.executable, "test.py", *sys.argv[1:]], cwd=tmp, capture_output=True,
-                                 env=dict(os.environ, CC=os.environ.get("CC", "clang")))
+            run = test()
             print(f"{path}: {what}: {'caught' if run.returncode else 'NOT CAUGHT'}")
             survivors += not run.returncode
         (Path(tmp) / path).write_text(source)

@@ -68,7 +68,8 @@ grouped = []
 
 
 for name in sys.argv[1:] or ["/usr/bin/true", "/usr/bin/ls", "/usr/bin/sed", "/usr/bin/xz"]:
-    path, *bounds = name.rsplit(":", 2)
+    parts = name.rsplit(":", 2)          # FILE:LO:HI, FILE a Windows path too
+    path, bounds = (parts[0], parts[1:]) if len(parts) == 3 else (name, [])
     valid(Path(path).read_bytes(), tuple(int(i, 0) for i in bounds) or None)
 # A profile changes only the encoder's effort: settings the header cannot
 # carry are refused before anything is written.
@@ -443,8 +444,14 @@ for i in range(1000):
     same(frame(payload, len(data), need))
 with tempfile.TemporaryDirectory() as tmp:
     exe = Path(tmp) / "test"
-    subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-O1", "-g", "-DHEDDLE_CHECKED",
-                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-Wall", "-Wextra",
-                    "-Werror", "tests/native.c", "unpack.c", "unsplit.c", "-o", exe], check=True)
+    cc = os.environ.get("CC", "cc")
+    if Path(cc).stem.lower() == "cl":   # MSVC, with its AddressSanitizer
+        subprocess.run([cc, "/nologo", "/std:c11", "/O1", "/Zi", "/DHEDDLE_CHECKED", "/fsanitize=address", "/W4",
+                        "/WX", "tests/native.c", "unpack.c", "unsplit.c", f"/Fo{tmp}\\", f"/Fd{tmp}\\", f"/Fe{exe}"],
+                       check=True)
+    else:
+        subprocess.run([cc, "-std=c11", "-O1", "-g", "-DHEDDLE_CHECKED", "-fsanitize=address,undefined",
+                        "-fno-sanitize-recover=all", "-Wall", "-Wextra", "-Werror", "tests/native.c",
+                        "unpack.c", "unsplit.c", "-o", exe], check=True)
     subprocess.run([exe], input=cases, check=True)
 print(f"{count} native decoder cases passed")

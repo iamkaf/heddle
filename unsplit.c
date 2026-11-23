@@ -1,6 +1,11 @@
 /* Restore the field streams written by split.py and clear the scratch buffer. */
 
 #include <stdint.h>
+#ifdef _MSC_VER                /* MSVC, for the packer: its own words for the same */
+#include <string.h>
+#define __builtin_memcpy memcpy
+#define __attribute__(x)
+#endif
 
 enum {                         /* the streams, in the order they are packed: the best */
     S_SIB, S_J8, S_D8, S_D8S, S_D8L, S_D32, S_D32S, S_D32L, S_RIP, S_I8, S_ISH, S_I32,
