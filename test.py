@@ -398,6 +398,15 @@ agree(member_x, jumps)
 same(b"HDB2" + member_x[4:12] + struct.pack("<I", zlib.crc32(member_x[16:], zlib.crc32(b"HDB2" + member_x[4:12])))
      + member_x[16:])
 
+# A version 1 member from the released version 1 writer (commit 2a1ca7b,
+# pack(image, (300, 2089))): every one of its 18 streams is in use, the
+# address transforms are, the code ends inside a call, and data lies on
+# both sides of it. Both version 2 readers must still read it.
+fixtures = Path(__file__).resolve().parent / "tests"
+v1 = (fixtures / "v1.hdl").read_bytes()
+assert v1[:4] == b"HDL1"
+agree(v1, (fixtures / "v1.bin").read_bytes())
+
 # Legacy layout stores C7 immediates in I32 and has no MOV length word.
 legacy_image = bytes.fromhex("c7 c0 78 56 34 12")
 lengths = [0] * 18
