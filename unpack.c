@@ -4,7 +4,11 @@
    self-unpacking executables can reuse it as is.
 
    pn_unpack(src, n, dst, size) writes exactly size bytes to dst and returns
-   0, or non-zero if the stream is damaged. Whatever the bytes, it reads no
+   0, or non-zero if the stream is damaged. Checked, a stream is whole when
+   its first byte is 0, it makes exactly size bytes with every distance
+   inside both what is written and an 8 MiB window, an end marker (of any
+   length) follows, the range coder's code is then 0, and that is the last
+   of its n bytes: the rule liblzma applies, so both readers agree. Whatever the bytes, it reads no
    further than src[n - 1] and writes no further than dst[size - 1]: past
    the end the input reads as zeros, every match distance is checked against
    what is already written, and every copy stops at size. The whole output
@@ -36,20 +40,11 @@ static uint16_t p[NPROBS];
 static const uint8_t *in;
 static uint32_t inlen, inpos, range, code;
 
-#ifdef HEDDLE_CHECKED
-static int short_input;
-#endif
-
+/* Past the end the input reads as zeros, and inpos stops at inlen + 1. */
 static uint32_t next(void)
 {
-#ifdef HEDDLE_CHECKED
-    if (inpos >= inlen) {
-        short_input = 1;
-        return 0;
-    }
-#endif
     uint32_t b = inpos < inlen ? in[inpos] : 0;
-    inpos++;
+    inpos += inpos <= inlen;
     return b;
 }
 
@@ -119,22 +114,31 @@ static int expand(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size,
     uint32_t out = 0, rep[4] = { 0, 0, 0, 0 }, d, i;
     unsigned state = 0, ps, l, g;
 
-#ifdef HEDDLE_CHECKED
-    short_input = 0;
-#endif
     in = src;
     inlen = n;
-    inpos = 1;                 /* the first byte is always 0 */
+    inpos = 0;
     range = 0xffffffff;
-    code = 0;
+    code = next();             /* the first byte is always 0 */
+#ifdef HEDDLE_CHECKED
+    if (code)
+        return 1;
+#endif
     for (i = 0; i < 4; i++)
         code = code << 8 | next();
     for (i = 0; i < NPROBS; i++)
         p[i] = 1024;
 
+#ifdef HEDDLE_CHECKED
+    for (;;) {                 /* to the end marker */
+#else
     while (out < size) {
+#endif
         ps = out & ((1u << pb) - 1);
         if (!bit(p + IS_MATCH + state * 16 + ps)) {
+#ifdef HEDDLE_CHECKED
+            if (out == size)
+                return 1;
+#endif
             /* A literal. After a match it is coded against the byte at
                rep[0], until the first bit that differs: offs is 0x100 while
                they agree and 0 after. */
@@ -157,8 +161,8 @@ static int expand(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size,
         }
         if (bit(p + IS_REP + state)) {
             /* A repeated distance, rep[g]; every rep is below out once
-               out > 0. */
-            if (!out)
+               out > 0. None at the start, or after the last byte. */
+            if (out - 1 >= size - 1)
                 return 1;
             g = 0;
             if (bit(p + IS_REP_G0 + state))
@@ -196,17 +200,28 @@ static int expand(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size,
                 }
                 d = base;
             }
-            if (d >= out)      /* before the start; the end marker is ~0 */
+            if (d >= out || d >> 23) {  /* before the start or the window */
+#ifdef HEDDLE_CHECKED
+                if (d == ~0u && out == size)
+                    break;     /* the end marker */
+#endif
                 return 1;
+            }
         }
         for (; g; g--)         /* d moves to the front of the reps */
             rep[g] = rep[g - 1];
         rep[0] = d;
+#ifdef HEDDLE_CHECKED
+        if (l + 2 > size - out)
+            return 1;
+        for (l += 2; l--; out++)
+#else
         for (l += 2; l-- && out < size; out++)
+#endif
             dst[out] = dst[out - d - 1];
     }
 #ifdef HEDDLE_CHECKED
-    return short_input;
+    return code | (inpos != n);
 #else
     return inpos > n;
 #endif

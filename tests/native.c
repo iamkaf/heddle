@@ -13,7 +13,7 @@ static void read_bytes(void *p, size_t n)
 
 int main(void)
 {
-    uint32_t h[4];
+    uint32_t h[4], index = 0;
     while (fread(h, sizeof h, 1, stdin) == 1) {
         uint8_t *in = malloc(h[0]), *dst = malloc(h[1]), *tmp = malloc(h[2]);
         uint8_t *expected = malloc(h[1]);
@@ -24,13 +24,20 @@ int main(void)
         int err = heddle_decode(in, h[0], dst, h[1], tmp, h[2]);
         if (h[3] == 0) {
             read_bytes(expected, h[1]);
-            if (err || memcmp(expected, dst, h[1]))
+            if (err || memcmp(expected, dst, h[1])) {
+                fprintf(stderr, "case %u: %s\n", index, err ? "rejected" : "other bytes");
                 return 3;
+            }
             for (uint32_t i = 0; i < h[2]; i++)
-                if (tmp[i])
+                if (tmp[i]) {
+                    fprintf(stderr, "case %u: scratch left\n", index);
                     return 4;
-        } else if (h[3] == 1 && !err)
+                }
+        } else if (h[3] == 1 && !err) {
+            fprintf(stderr, "case %u: accepted\n", index);
             return 5;
+        }
+        index++;
         free(in);
         free(dst);
         free(tmp);

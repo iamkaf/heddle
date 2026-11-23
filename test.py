@@ -1,4 +1,5 @@
 """Host decoder tests. Optional corpus: FILE or FILE:LO:HI (file offsets)."""
+import lzma
 import os
 import random
 import struct
@@ -10,6 +11,8 @@ from pathlib import Path
 
 import heddle
 import split
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tests"))
+import lzma1
 
 rng = random.Random(3801)
 cases = bytearray()
@@ -24,12 +27,44 @@ def case(member, n, scratch, outcome, expected=b""):
     count += 1
 
 
+def python(member):
+    try:
+        return heddle.unpack(member)
+    except (ValueError, struct.error, lzma.LZMAError) as exc:
+        return exc
+
+
+def agree(member, expected=None, reason=None):
+    """Both readers give the same verdict: expected, or a refusal (Python's
+    naming reason). Capacities are the sizes the header states."""
+    n, need = struct.unpack_from("<II", member, 4) if len(member) >= 12 else (64, 80)
+    got = python(member)
+    if expected is None:
+        assert isinstance(got, Exception), "Python accepted a damaged member"
+        assert reason is None or reason in str(got), (reason, got)
+        case(member, n, need, 1)
+    else:
+        assert got == expected, got
+        case(member, n, need, 0, expected)
+
+
+def same(member):
+    """Whatever Python makes of it, C must make the same."""
+    got = python(member)
+    agree(member, None if isinstance(got, Exception) else got)
+
+
 def valid(data, bounds):
     member = heddle.pack(data, bounds)
     assert heddle.unpack(member) == data
     need, = struct.unpack_from("<I", member, 8)
     case(member, len(data), need, 0, data)
+    if member[:3] != b"HDS":
+        grouped.append(member)
     return member, need
+
+
+grouped = []
 
 
 for name in sys.argv[1:] or ["/usr/bin/true", "/usr/bin/ls", "/usr/bin/sed", "/usr/bin/xz"]:
@@ -56,6 +91,89 @@ def frame(payload, n, scratch, magic=b"HDS2"):
     h = struct.pack("<4sII", magic, n, scratch)
     return h + struct.pack("<I", zlib.crc32(payload, zlib.crc32(h))) + payload
 
+
+def blocks(member):
+    """A grouped member's blocks: [props, stream, raw], the dictionary's
+    intermediate size kept at the front of its stream."""
+    out, pos = [], 16
+    while pos < len(member):
+        props, packed, raw = struct.unpack_from("<BII", member, pos)
+        out.append([props, member[pos + 9:pos + 9 + packed], raw])
+        pos += 9 + packed
+    return out
+
+
+def regroup(member, parts):
+    n, need = struct.unpack_from("<II", member, 4)
+    body = b"".join(struct.pack("<BII", props, len(stream), raw) + stream
+                    for props, stream, raw in parts)
+    return frame(body, n, need, member[:4])
+
+
+# One rule for a whole LZMA stream, the same in both readers: first byte 0,
+# exactly the stated bytes, distances inside the output and an 8 MiB
+# window, an end marker of any length, the range coder's code then 0, and
+# nothing after. Checksums are recomputed so only the stream is at fault.
+def solid(stream, data):
+    """An HDS2 member of data with no code; fields are 84 zero bytes, then data."""
+    return frame(stream, len(data), 84 + len(data))
+
+
+image = bytes(range(32)) * 2
+fields0 = bytes(84) + image
+agree(solid(lzma1.literals(fields0), image), image)
+agree(solid(lzma1.literals(fields0, end=False), image), reason="length")
+for length in (2, 9, 17, 273):
+    e = lzma1.Encoder()
+    for b in fields0:
+        e.literal(b)
+    e.end(length)
+    agree(solid(e.finish(), image), image)
+stream = lzma1.literals(fields0)
+for bad, reason in ((b"\1" + stream[1:], "stream"), (stream + b"\0", "length"),
+                    (stream[:-1], "length"), (stream[:-1] + bytes([stream[-1] ^ 1]), "stream")):
+    agree(solid(bad, image), reason=reason)
+e = lzma1.Encoder()                     # an end marker one byte early
+for b in fields0[:-1]:
+    e.literal(b)
+e.end()
+agree(solid(e.finish(), image), reason="length")
+e = lzma1.Encoder()                     # a literal after the last byte
+for b in fields0 + b"\0":
+    e.literal(b)
+e.end()
+agree(solid(e.finish(), image), reason="length")
+for tail in range(1, 4):                # a match running past the end
+    e = lzma1.Encoder()
+    for b in fields0[:-2]:
+        e.literal(b)
+    e.match(31, 2 + tail)
+    e.end()
+    agree(solid(e.finish(), image), reason="length")
+e = lzma1.Encoder()                     # a short rep past the end
+for b in fields0:
+    e.literal(b)
+e.rep_match(0, 2)
+e.end()
+agree(solid(e.finish(), image), reason="length")
+for d, ok in ((83 + len(image), True), (84 + len(image), False)):
+    e = lzma1.Encoder()                 # the furthest distance, and one past
+    for b in fields0:
+        e.literal(b)
+    e.match(d, 2)
+    e.end()
+    grown = image + fields0[-d - 1:][:2]
+    agree(solid(e.finish(), grown), grown if ok else None)
+window = 1 << 23
+for d, ok in ((window - 1, True), (window, False)):
+    e = lzma1.Encoder()                 # the 8 MiB window
+    e.literal(0)
+    while len(e.data) < window + 84:
+        e.rep_match(0, 273)
+    e.match(d, 2)
+    e.end()
+    zeros = bytes(len(e.data) - 84)
+    agree(solid(e.finish(), zeros), zeros if ok else None)
 
 fields = split.split(data, 3, 250)
 payload = heddle.compress(fields)
@@ -106,9 +224,19 @@ for i in range(2 + split.NS):
     bad = bytearray(fields)
     struct.pack_into("<I", bad, 4*i, 0xffffffff)
     case(frame(heddle.compress(bad), len(data), need), len(data), need, 1)
+# The same rule inside each block of a grouped member, the dictionary's
+# intermediate stream included.
+assert grouped, "no grouped member to damage"
+for whole in grouped[:2]:
+    parts = blocks(whole)
+    for j, (props, stream, raw) in enumerate(parts):
+        at = 4 if props == 253 else 0
+        for bad, reason in ((stream[:at] + b"\1" + stream[at + 1:], "stream"),
+                            (stream + b"\0", "length"), (stream[:-1], "length")):
+            agree(regroup(whole, parts[:j] + [[props, bad, raw]] + parts[j + 1:]), reason=reason)
+# Damage that keeps the checksum good: both readers must agree on every
+# mutation, accepting the same bytes or refusing.
 for i in range(1000):
-    # Bypass the checksum to exercise both decoders. Some mutations encode
-    # valid alternative programs, so only the memory bounds are asserted.
     if i % 2:
         bad = bytearray(fields)
         pos = rng.randrange(20, len(bad))
@@ -117,7 +245,7 @@ for i in range(1000):
     else:
         payload = bytearray(member[16:])
         payload[rng.randrange(len(payload))] ^= rng.randint(1, 255)
-    case(frame(payload, len(data), need), len(data), need, 2)
+    same(frame(payload, len(data), need))
 with tempfile.TemporaryDirectory() as tmp:
     exe = Path(tmp) / "test"
     subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-O1", "-g", "-DHEDDLE_CHECKED",

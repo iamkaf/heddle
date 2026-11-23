@@ -138,8 +138,13 @@ def pack(data, bounds=None, profile=LZMA):
 
 
 def expand(payload, need, profile):
+    """A stream is whole when liblzma reads it to its end marker, without
+    error, as exactly need bytes, with no byte of payload left over."""
     decoder = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=[profile])
-    fields = decoder.decompress(payload, max_length=need + 1)
+    try:
+        fields = decoder.decompress(payload, max_length=need + 1)
+    except lzma.LZMAError as exc:
+        raise ValueError(f"invalid compressed stream: {exc}") from None
     if len(fields) != need or not decoder.eof or decoder.unused_data:
         raise ValueError("invalid compressed length")
     return fields
