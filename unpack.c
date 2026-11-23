@@ -304,6 +304,12 @@ int heddle_decode(const uint8_t *src, uint32_t bytes, uint8_t *dst,
     __builtin_memcpy(&stored, src + 12, 4);
     if (size > capacity || size > 0xffffff00u || need > available || need < 80)
         return 1;
+#if PTRDIFF_MAX < UINT32_MAX
+    /* unsplit.c subtracts pointers within scratch: with 32-bit pointers,
+       scratch must not pass PTRDIFF_MAX. */
+    if (need > PTRDIFF_MAX)
+        return 1;
+#endif
     for (uint32_t i = 0; i < bytes; i++) {
         if (i >= 12 && i < 16)
             continue;

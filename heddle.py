@@ -112,6 +112,8 @@ def grouped(fields, profile, size, tokens):
                     candidate = struct.pack("<I", len(encoded)) + compress(encoded, filters)
                     if len(candidate) < len(block):
                         props, block = 253, candidate
+            if len(block) > LIMIT:
+                return None, False
             payload += struct.pack("<BII", props, len(block), end - start)
             payload += block
         start = end
@@ -122,6 +124,11 @@ def grouped(fields, profile, size, tokens):
 # member with lc/lp/pb 3/0/2 and every stream with an 8 MiB window, so a
 # profile may change only how hard the encoder looks.
 PRESET_DICT = (1 << 18, 1 << 20, 1 << 21, 1 << 22, 1 << 22, 1 << 23, 1 << 23, 1 << 24, 1 << 25, 1 << 26)
+
+
+# Every length in a member is a u32, and the C reader takes the member's own
+# length as one: so does the member, header and all.
+LIMIT = 0xFFFFFFFF
 
 
 def check_profile(profile):
@@ -136,14 +143,18 @@ def check_profile(profile):
 
 def member(fields, size, profile=LZMA, tokens=None):
     check_profile(profile)
+    if size > 0xFFFFFF00 or len(fields) > LIMIT:
+        raise ValueError("an image is at most 0xffffff00 bytes")
     payload = compress(fields, [profile])
     magic = b"HDS2"
     # Very small members cannot recover the block headers.
     if len(fields) >= 1024:
         blocks, used_xor = grouped(fields, profile, size, tokens)
-        if len(blocks) < len(payload):
+        if blocks is not None and len(blocks) < len(payload):
             payload = blocks
             magic = b"HDX2" if used_xor else b"HDB2"
+    if 16 + len(payload) > LIMIT:
+        raise ValueError("a member is at most 4 GiB - 1 bytes, the C reader's limit")
     header = struct.pack("<4sII", magic, size, len(fields))
     return header + struct.pack("<I", zlib.crc32(payload, zlib.crc32(header))) + payload
 

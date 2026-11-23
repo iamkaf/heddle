@@ -84,6 +84,42 @@ for profile, reason in ((dict(heddle.LZMA, lc=4), "lc/lp/pb"), (dict(heddle.LZMA
         raise AssertionError(f"wrote a member with {profile}")
     except ValueError as exc:
         assert reason in str(exc), exc
+# Lengths the C API cannot take are refused at write time. Stand-in
+# compressor output of the size in question, since real data that large
+# would take minutes.
+class Huge:
+    def __init__(self, n):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __radd__(self, other):
+        return Huge(len(other) + self.n)
+
+
+real_compress = heddle.compress
+for fields_in, out in ((small, heddle.LIMIT - 15), (bytes(2048), heddle.LIMIT + 1)):
+    heddle.compress = lambda data, filters=None: Huge(out)
+    try:
+        heddle.member(fields_in, 256)
+        raise AssertionError("wrote a member over 4 GiB")
+    except ValueError as exc:
+        assert "4 GiB" in str(exc), exc
+    finally:
+        heddle.compress = real_compress
+heddle.compress = lambda data, filters=None: Huge(heddle.LIMIT - 16)
+try:                                    # the largest that fits gets as far as its checksum
+    heddle.member(small, 256)
+except TypeError:
+    pass
+finally:
+    heddle.compress = real_compress
+try:
+    heddle.member(small, 0xFFFFFF01)
+    raise AssertionError("wrote an image over 0xffffff00")
+except ValueError as exc:
+    assert "0xffffff00" in str(exc), exc
 for n in range(64):
     data = rng.randbytes(n)
     lo = rng.randrange(n + 1)

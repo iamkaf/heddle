@@ -5,6 +5,9 @@
 /* Compile unpack.c and unsplit.c with -DHEDDLE_CHECKED. Little-endian host.
    Members start with a four-byte HDL format identifier, then little-endian u32 output and scratch sizes
    and CRC32. Set your own resource limits before allocating either buffer.
+   Limits, which the writer keeps and this reader checks: a member is at
+   most 0xffffffff bytes, its image at most 0xffffff00, and its scratch at
+   most 0xffffffff, or PTRDIFF_MAX on a host with 32-bit pointers.
    Pass three disjoint buffers with their actual lengths. Contents of dst
    and scratch are unspecified on error. Success clears the used scratch.
    Peak caller storage = input + output + scratch, plus fixed static state
