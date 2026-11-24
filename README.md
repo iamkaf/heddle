@@ -2,32 +2,30 @@
 
 ![MIT license](https://shieldcn.dev/badge/License-MIT-527a79.svg?variant=secondary)
 
-Heddle is a filter that helps LZMA compress x86-64 machine code. Before compression it sorts each instruction's fields into separate streams, so opcodes sit next to opcodes and displacements next to displacements. It was built for Pinion, a game that has to fit on one floppy disk. On Pinion's core, version 2 of the format comes out 121,299 bytes smaller than BCJ2, and version 1 came out 93,710 bytes smaller. The wire format is documented in [FORMAT.md](FORMAT.md).
+Heddle is a filter that helps LZMA compress x86-64 machine code. Before compression it sorts each instruction's fields into separate streams, so opcodes sit next to opcodes and displacements next to displacements. It was built for Pinion, a game that has to fit on one floppy disk. On Pinion's core, Heddle comes out 121,299 bytes smaller than BCJ2. The wire format, version 2, is documented in [FORMAT.md](FORMAT.md), and the readers still accept version 1 members.
 
-| Input | Original | Plain LZMA | x86 BCJ + LZMA | BCJ2 + LZMA | Heddle 1 (HDL1) | Heddle 2 |
-|---|---:|---:|---:|---:|---:|---:|
-| Game core | 1,380,260 | 718,075 | 694,385 | 682,071 | 588,361 | 560,772 |
-| true | 32,304 | 11,787 | 11,343 | 11,244 | 11,060 | 11,070 |
-| ls | 153,400 | 62,685 | 60,315 | 58,679 | 56,443 | 55,602 |
-| sed | 119,888 | 54,021 | 51,483 | 50,068 | 48,116 | 47,105 |
-| xz | 103,312 | 41,058 | 38,382 | 37,889 | 35,267 | 34,713 |
-| Linked PE | 15,872 | 7,593 | 7,508 | 7,441 | 7,125 | 7,127 |
+| Input | Original | Plain LZMA | x86 BCJ + LZMA | BCJ2 + LZMA | Heddle |
+|---|---:|---:|---:|---:|---:|
+| Game core | 1,380,260 | 718,075 | 694,385 | 682,071 | 560,772 |
+| true | 32,304 | 11,787 | 11,343 | 11,244 | 11,070 |
+| ls | 153,400 | 62,685 | 60,315 | 58,679 | 55,602 |
+| sed | 119,888 | 54,021 | 51,483 | 50,068 | 47,105 |
+| xz | 103,312 | 41,058 | 38,382 | 37,889 | 34,713 |
+| Linked PE | 15,872 | 7,593 | 7,508 | 7,441 | 7,127 |
 
-On the four Unix programs, BCJ2 already gets most of the gain. On `true`, version 2 is only 174 bytes smaller than BCJ2 (version 1 was 184 bytes smaller), less than the extra size of Heddle's decoder. For small programs, a custom decoder can cost more than the filter saves.
+On the four Unix programs, BCJ2 already gets most of the gain. On `true`, Heddle is only 174 bytes smaller than BCJ2, less than the extra size of Heddle's decoder. For small programs, a custom decoder can cost more than the filter saves.
 
 | Decoder | unpack.c (LZMA and member) | Filter | Total |
 |---|---:|---:|---:|
 | Plain LZMA1 | 1,365 | 0 | 1,365 |
 | XZ x86 BCJ | 1,365 | 448 | 1,813 |
 | 7-Zip BCJ2 | 1,365 | 1,043 | 2,408 |
-| Heddle 1, trusted raw path | 1,328 | 1,377 | 2,705 |
-| Heddle 1, checked member | 1,548 | 1,550 | 3,098 |
-| Heddle 2, trusted raw path | 1,365 | 1,418 | 2,783 |
-| Heddle 2, checked member | 2,473 | 1,721 | 4,194 |
+| Heddle, trusted raw path | 1,365 | 1,418 | 2,783 |
+| Heddle, checked member | 2,473 | 1,721 | 4,194 |
 
-Every column uses the same inputs. The game core is the raw image of Pinion commit c00684d, with its code at file offsets [8192, 1250955). The other five are fixed programs from a private corpus. Sizes cover the whole input file. Heddle filters only the .text section (for the raw image, the linked code range), while BCJ and BCJ2 scan the whole file. Plain LZMA, x86 BCJ and both Heddle columns use Python's liblzma with raw LZMA1, an 8 MiB dictionary and nice length 96. That is the default profile, and the core uses it too. Heddle 1 is the released version 1 writer (commit 2a1ca7b). BCJ2 is 7-Zip 26.04 with three LZMA streams at the same settings plus a range-coded control stream, and its size is the packed size 7-Zip reports. Container headers are left out: a Heddle member adds a 16-byte header on top. The nine-byte headers of a version 2 member's blocks are part of the payload, so they are counted.
+Every column uses the same inputs. The game core is the raw image of Pinion commit c00684d, with its code at file offsets [8192, 1250955). The other five are fixed programs from a private corpus. Sizes cover the whole input file. Heddle filters only the .text section (for the raw image, the linked code range), while BCJ and BCJ2 scan the whole file. Plain LZMA, x86 BCJ and Heddle use Python's liblzma with raw LZMA1, an 8 MiB dictionary and nice length 96. That is the default profile, and the core uses it too. BCJ2 is 7-Zip 26.04 with three LZMA streams at the same settings plus a range-coded control stream, and its size is the packed size 7-Zip reports. Container headers are left out: a Heddle member adds a 16-byte header on top. The nine-byte headers of a member's blocks are part of the payload, so they are counted.
 
-Decoder sizes are for x86-64, built with GCC 16.2 using `-Os -ffreestanding -fno-asynchronous-unwind-tables`, and count code plus read-only data. Heddle's rows compile each version's `unpack.c` and `unsplit.c` with and without `HEDDLE_CHECKED`. The checked `unpack.c` also handles the member header, checksum, blocks and dictionary. Version 2's checked reader is bigger mainly because of the blocks, the dictionary and the whole-stream rule (FORMAT.md). The XZ 5.8.2 figure covers the standalone decode entry point, the shared x86 conversion routine and its mask table. The 7-Zip 26.01 figure covers `Bcj2Dec_Init` and `Bcj2Dec_Decode`. Both were measured once from source and paired with Heddle's trusted LZMA decoder for comparison. A real BCJ2 integration would also need storage and dispatch for its multiple streams.
+Decoder sizes are for x86-64, built with GCC 16.2 using `-Os -ffreestanding -fno-asynchronous-unwind-tables`, and count code plus read-only data. Heddle's rows compile `unpack.c` and `unsplit.c` without and with `HEDDLE_CHECKED`. The checked build is bigger mainly because its `unpack.c` also handles the member header, checksum, blocks and dictionary, and applies the whole-stream rule (FORMAT.md). The XZ 5.8.2 figure covers the standalone decode entry point, the shared x86 conversion routine and its mask table. The 7-Zip 26.01 figure covers `Bcj2Dec_Init` and `Bcj2Dec_Decode`. Both were measured once from source and paired with Heddle's trusted LZMA decoder for comparison. A real BCJ2 integration would also need storage and dispatch for its multiple streams.
 
 ## Try a file
 
@@ -80,7 +78,7 @@ int restore(const uint8_t *member, uint32_t member_bytes,
 
 To size the buffers, read the member's 16-byte header first. Its first four bytes are a tag naming the layout. Version 2 writes `HDS2` for a single LZMA stream, `HDB2` for independently compressed blocks, and `HDX2` for blocks whose consecutive long conditional branch targets are XORed. Version 2 readers also read version 1's `HDL1`. The little-endian u32s at offsets 4 and 8 give the output size and the scratch size. Check both against your application's memory budget before allocating, and pass each buffer's real capacity. On success the decoder clears the part of the scratch buffer it used. For a dictionary block, the decoder briefly uses the output buffer to hold the block's intermediate bytes before it rebuilds the fields. [FORMAT.md](FORMAT.md) documents the full layout, the size limits and the rule both readers use to accept an LZMA stream.
 
-Peak memory is the member, the output and the scratch buffer, plus 16,406 bytes of static decoder state (measured on x86-64) and a small stack. In version 2, scratch is usually the image size plus 84 bytes, plus padding for at most one partial instruction. The three buffers must not overlap, and calls must not run concurrently. All stored sizes are 32-bit. The CRC-32 catches accidental damage, and the checked decoder also checks every stream boundary independently of the CRC. Builds without `HEDDLE_CHECKED` instead expose the low-level routines `heddle_unpack` and `heddle_unsplit`, for stubs that decode trusted, already verified streams.
+Peak memory is the member, the output and the scratch buffer, plus 16,406 bytes of static decoder state (measured on x86-64) and a small stack. Scratch is usually the image size plus 84 bytes, plus padding for at most one partial instruction. The three buffers must not overlap, and calls must not run concurrently. All stored sizes are 32-bit. The CRC-32 catches accidental damage, and the checked decoder also checks every stream boundary independently of the CRC. Builds without `HEDDLE_CHECKED` instead expose the low-level routines `heddle_unpack` and `heddle_unsplit`, for stubs that decode trusted, already verified streams.
 
 ## Why the transform works
 
