@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Run by hand to try the builds; only a tag publishes.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,15 +33,18 @@ jobs:
       - uses: actions/checkout@v7
       - if: runner.os == 'Windows'
         uses: ./.github/actions/msvc
+      # Static against musl: 108 KB, where static glibc pulls in 800 KB of
+      # stdio, locale and iconv.
       - name: Build
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: |
-          if [ "${{ runner.os }}" = macOS ]; then
-            flags="-arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
-          else
-            flags=-static
-          fi
-          cc -O2 $flags -DHEDDLE_CHECKED -D_7ZIP_ST $SOURCES -o heddle
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get install -y --no-install-recommends musl-tools ||
+            { sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools; }
+          musl-gcc -O2 -static -s -DHEDDLE_CHECKED -D_7ZIP_ST $SOURCES -o heddle
+      - name: Build
+        if: runner.os == 'macOS'
+        run: cc -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -DHEDDLE_CHECKED -D_7ZIP_ST $SOURCES -o heddle
       # PowerShell, since Git Bash's own link.exe would shadow MSVC's. /MT
       # links the C runtime in, so no Visual C++ redistributable is needed.
       - name: Build
@@ -66,6 +71,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
