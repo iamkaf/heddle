@@ -25,11 +25,24 @@ jobs:
       CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v7
-      - run: sudo apt-get update && sudo apt-get install -y liblzma-dev
+      # The image's package lists usually suffice; refreshing them can take
+      # minutes on a slow mirror, so that happens only if they are stale.
+      - name: Install liblzma
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get install -y --no-install-recommends liblzma-dev ||
+            { sudo apt-get update && sudo apt-get install -y --no-install-recommends liblzma-dev; }
       - run: python3 test.py
       - run: python3 tests/pack.py
-      - if: matrix.cc == 'clang'
-        run: python3 tests/mutate.py
+
+  mutations:
+    name: Mutations
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tests/mutate.py
 
   macos:
     name: macOS (arm64, clang)
@@ -39,11 +52,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Programs here are Mach-O: test the x86-64 slice of a few system
-      # programs, bounded by their __text sections.
+      # programs, bounded by their __text sections. bash is big enough to be
+      # packed in blocks.
       - name: Find x86-64 inputs
         run: |
           inputs=()
-          for program in /bin/ls /usr/bin/sed /usr/bin/true; do
+          for program in /bin/bash /bin/ls /usr/bin/true; do
             slice="$RUNNER_TEMP/$(basename "$program")"
             lipo -thin x86_64 "$program" -output "$slice"
             read -r offset size < <(otool -l "$slice" | awk '

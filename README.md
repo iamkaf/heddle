@@ -109,4 +109,4 @@ To test other files, pass them as arguments, writing raw images as `FILE:LO:HI`.
 
 It takes the same arguments as `test.py`, also supports `CC=cl`, and tries `compare` on the first input. It runs in about 20 seconds.
 
-`python3 tests/mutate.py` first requires `test.py` to pass. It then removes each check from the two readers, one at a time, and requires `test.py` to fail, which shows that every check has its own test. It takes the same arguments as `test.py` and runs in about a minute and a half.
+`python3 tests/mutate.py` first requires `test.py` to pass. It then removes each check from the two readers, one at a time, and requires `test.py` to fail, which shows that every check has its own test. It takes the same arguments as `test.py` and runs the mutations side by side, in about 20 seconds on a 4-core machine.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Remove each reader check in turn and require test.py to fail: every
 check has a test that fails for the reason it names. Works on a copy of
-the checkout; about a minute and a half."""
+the checkout, the mutations side by side."""
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
@@ -45,32 +46,38 @@ PY = {
 }
 
 here = Path(__file__).resolve().parent.parent
-survivors = 0
-with tempfile.TemporaryDirectory() as tmp:
-    for name in ("heddle.py", "opcodes.py", "split.py", "unpack.c", "unsplit.c", "heddle.h", "test.py"):
-        shutil.copy(here / name, tmp)
-    shutil.copytree(here / "tests", Path(tmp) / "tests")
-    # The copy runs elsewhere: inputs by their full paths, FILE:LO:HI kept.
-    inputs = []
-    for name in sys.argv[1:]:
-        parts = name.rsplit(":", 2)
-        path, bounds = (parts[0], parts[1:]) if len(parts) == 3 else (name, [])
-        inputs.append(":".join([str(Path(path).resolve()), *bounds]))
+# The copies run elsewhere: inputs by their full paths, FILE:LO:HI kept.
+inputs = []
+for name in sys.argv[1:]:
+    parts = name.rsplit(":", 2)
+    path, bounds = (parts[0], parts[1:]) if len(parts) == 3 else (name, [])
+    inputs.append(":".join([str(Path(path).resolve()), *bounds]))
 
-    def test():
+
+def test(mutation=None):
+    """test.py's exit status on a fresh copy of the checkout, with one
+    reader check removed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("heddle.py", "opcodes.py", "split.py", "unpack.c", "unsplit.c", "heddle.h", "test.py"):
+            shutil.copy(here / name, tmp)
+        shutil.copytree(here / "tests", Path(tmp) / "tests")
+        if mutation:
+            path, old, new = mutation
+            source = (Path(tmp) / path).read_text()
+            assert source.count(old) == 1, old
+            (Path(tmp) / path).write_text(source.replace(old, new))
         return subprocess.run([sys.executable, "test.py", *inputs], cwd=tmp, capture_output=True,
                               env=dict(os.environ, CC=os.environ.get("CC", "clang")))
 
-    first = test()                      # unchanged, it passes, so a failure below is the mutation's
-    if first.returncode:
-        sys.exit("test.py fails unchanged:\n" + first.stderr.decode()[-2000:])
-    for path, mutations in (("unpack.c", C), ("opcodes.py", PY)):
-        source = (Path(tmp) / path).read_text()
-        for what, (old, new) in mutations.items():
-            assert source.count(old) == 1, what
-            (Path(tmp) / path).write_text(source.replace(old, new))
-            run = test()
-            print(f"{path}: {what}: {'caught' if run.returncode else 'NOT CAUGHT'}")
-            survivors += not run.returncode
-        (Path(tmp) / path).write_text(source)
+
+first = test()                          # unchanged, it passes, so a failure below is the mutation's
+if first.returncode:
+    sys.exit("test.py fails unchanged:\n" + first.stderr.decode()[-2000:])
+mutations = [(path, what, old, new) for path, table in (("unpack.c", C), ("opcodes.py", PY))
+             for what, (old, new) in table.items()]
+survivors = 0
+with ThreadPoolExecutor(os.cpu_count()) as pool:
+    for (path, what, _, _), run in zip(mutations, pool.map(lambda m: test((m[0], m[2], m[3])), mutations)):
+        print(f"{path}: {what}: {'caught' if run.returncode else 'NOT CAUGHT'}")
+        survivors += not run.returncode
 sys.exit(f"{survivors} checks without a test" if survivors else 0)
