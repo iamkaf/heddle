@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.cc }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y liblzma-dev
+      - run: python3 test.py
+      - run: python3 tests/pack.py
+      - if: matrix.cc == 'clang'
+        run: python3 tests/mutate.py
+
+  macos:
+    name: macOS (arm64, clang)
+    runs-on: macos-latest
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v7
+      # Programs here are Mach-O: test the x86-64 slice of a few system
+      # programs, bounded by their __text sections.
+      - name: Find x86-64 inputs
+        run: |
+          inputs=()
+          for program in /bin/ls /usr/bin/sed /usr/bin/true; do
+            slice="$RUNNER_TEMP/$(basename "$program")"
+            lipo -thin x86_64 "$program" -output "$slice"
+            read -r offset size < <(otool -l "$slice" | awk '
+              $1 == "sectname" { text = $2 == "__text" }
+              text && $1 == "size" { size = $2 }
+              text && $1 == "offset" { print $2, size; exit }')
+            inputs+=("$slice:$offset:$((offset + size))")
+          done
+          echo "INPUTS=${inputs[*]}" >> "$GITHUB_ENV"
+      - run: python3 test.py $INPUTS
+      - run: python3 tests/pack.py $INPUTS
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    env:
+      CC: cl
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: python test.py C:\Windows\System32\notepad.exe C:\Windows\System32\cmd.exe C:\Windows\System32\kernel32.dll
+      - run: python tests/pack.py

@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, bin: heddle }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, bin: heddle }
+          - { name: macos-universal, os: macos-latest, bin: heddle }
+          - { name: windows-x86_64, os: windows-latest, bin: heddle.exe }
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCES: pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${{ runner.os }}" = macOS ]; then
+            flags="-arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
+          else
+            flags=-static
+          fi
+          cc -O2 $flags -DHEDDLE_CHECKED -D_7ZIP_ST $SOURCES -o heddle
+      # PowerShell, since Git Bash's own link.exe would shadow MSVC's. /MT
+      # links the C runtime in, so no Visual C++ redistributable is needed.
+      - name: Build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cl /nologo /O2 /MT /DHEDDLE_CHECKED /D_7ZIP_ST $env:SOURCES.Split(' ') /Fe:heddle.exe
+      - name: Smoke test
+        run: |
+          ./${{ matrix.bin }} pack README.md readme.hdl --code 0 4096
+          ./${{ matrix.bin }} unpack readme.hdl readme.out
+          cmp README.md readme.out
+      - name: Package
+        run: |
+          dir="heddle-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir "$dir"
+          cp ${{ matrix.bin }} LICENSE README.md "$dir"/
+          if [ "${{ runner.os }}" = Windows ]; then 7z a -tzip "$dir.zip" "$dir"; else tar czf "$dir.tar.gz" "$dir"; fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            heddle-*.tar.gz
+            heddle-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      # The change log is every commit since the previous tag.
+      - name: Write the change log
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo "## Changes"
+            echo
+            git log --reverse --format='- %s (%h)' "${previous:+$previous..}$GITHUB_REF_NAME"
+            if [ -n "$previous" ]; then
+              echo
+              echo "**Full diff**: https://github.com/$GITHUB_REPOSITORY/compare/$previous...$GITHUB_REF_NAME"
+            fi
+          } > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && sha256sum heddle-* > SHA256SUMS && cd ..
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md dist/*

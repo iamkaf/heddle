@@ -29,7 +29,7 @@ Decoder sizes are for x86-64, built with GCC 16.2 using `-Os -ffreestanding -fno
 
 ## Try a file
 
-The packer is `pack.c`, written in C11, with the LZMA encoder vendored in `lzma/`. It has no dependencies and builds with a single command using GCC or Clang on Linux, or Apple's clang on macOS. An arm64 Mac can pack x86-64 programs too. Run these commands from the repository root:
+The packer is `pack.c`, written in C11, with the LZMA encoder vendored in `lzma/`. It has no dependencies and builds with a single command using GCC or Clang on Linux, or Apple's clang on macOS. An arm64 Mac can pack x86-64 programs too. Pre-built binaries for Linux (x86-64 and arm64), macOS and Windows are attached to each [release](https://github.com/iamkaf/heddle/releases). To build it yourself, run these commands from the repository root:
 
 ```sh
 cc -O2 -DHEDDLE_CHECKED -D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c -o heddle
