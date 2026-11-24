@@ -77,6 +77,6 @@ jobs:
       CC: cl
     steps:
       - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ./.github/actions/msvc
       - run: python test.py C:\Windows\System32\notepad.exe C:\Windows\System32\cmd.exe C:\Windows\System32\kernel32.dll
       - run: python tests/pack.py

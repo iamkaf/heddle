@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ./.github/actions/msvc
       - name: Build
         if: runner.os != 'Windows'
         run: |
