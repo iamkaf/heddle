@@ -25,9 +25,9 @@ On the four Unix programs, BCJ2 already gets most of the gain. On `true`, versio
 | Heddle 2, trusted raw path | 1,365 | 1,418 | 2,783 |
 | Heddle 2, checked member | 2,473 | 1,721 | 4,194 |
 
-All rows use the same inputs: the game core is the raw image of Pinion commit c00684d (code [8192, 1250955)), the others five fixed programs from a private corpus. Payload bytes cover the entire input file. Heddle splits only its .text section (the linked code interval for the raw image). BCJ and BCJ2 scan the whole input. Plain LZMA, x86 BCJ and both Heddle columns use Python's liblzma, raw LZMA1, an 8 MiB dictionary and nice length 96: the public default profile, also for the core. Heddle 1 is the released writer (commit 2a1ca7b). BCJ2 uses 7-Zip 26.04, three LZMA streams with those settings, and a range-coded control stream. Its count is the archive's reported packed size. Container headers are excluded throughout: a Heddle member adds its 16-byte header, while the nine-byte headers of a version 2 member's blocks are payload and counted.
+Every column uses the same inputs. The game core is the raw image of Pinion commit c00684d, with its code at file offsets [8192, 1250955). The other five are fixed programs from a private corpus. Sizes cover the whole input file. Heddle filters only the .text section (for the raw image, the linked code range), while BCJ and BCJ2 scan the whole file. Plain LZMA, x86 BCJ and both Heddle columns use Python's liblzma with raw LZMA1, an 8 MiB dictionary and nice length 96. That is the default profile, and the core uses it too. Heddle 1 is the released version 1 writer (commit 2a1ca7b). BCJ2 is 7-Zip 26.04 with three LZMA streams at the same settings plus a range-coded control stream, and its size is the packed size 7-Zip reports. Container headers are left out: a Heddle member adds a 16-byte header on top. The nine-byte headers of a version 2 member's blocks are part of the payload, so they are counted.
 
-Decoder bytes are x86-64 GCC 16.2 with `-Os -ffreestanding -fno-asynchronous-unwind-tables`, code and read-only constants. Heddle's rows compile each version's unpack.c and unsplit.c, without and with `HEDDLE_CHECKED`; the checked unpack.c also holds the member header, checksum, blocks and dictionary. Version 2's checked reader is larger mostly for its blocks, its dictionary and the whole-stream rule (FORMAT.md). The XZ 5.8.2 count covers the standalone decode entry, shared x86 conversion routine and mask table. The 7-Zip 26.01 count covers Bcj2Dec_Init and Bcj2Dec_Decode. Those two were measured once, from their sources, and are paired with our trusted LZMA decoder for scale. An actual BCJ2 integration also needs multi-stream storage and dispatch.
+Decoder sizes are for x86-64, built with GCC 16.2 using `-Os -ffreestanding -fno-asynchronous-unwind-tables`, and count code plus read-only data. Heddle's rows compile each version's `unpack.c` and `unsplit.c` with and without `HEDDLE_CHECKED`. The checked `unpack.c` also handles the member header, checksum, blocks and dictionary. Version 2's checked reader is bigger mainly because of the blocks, the dictionary and the whole-stream rule (FORMAT.md). The XZ 5.8.2 figure covers the standalone decode entry point, the shared x86 conversion routine and its mask table. The 7-Zip 26.01 figure covers `Bcj2Dec_Init` and `Bcj2Dec_Decode`. Both were measured once from source and paired with Heddle's trusted LZMA decoder for comparison. A real BCJ2 integration would also need storage and dispatch for its multiple streams.
 
 ## Try a file
 
@@ -60,7 +60,7 @@ The encoder in `lzma/` is Igor Pavlov's LZMA SDK 9.20 from [7-zip.org](https://w
 
 ## Embed the decoder
 
-Compile both C files in checked mode and include heddle.h. The decoder uses integer operations, fixed static tables and four-byte compiler copies. It runs on little-endian machines and makes no allocations.
+Compile `unpack.c` and `unsplit.c` with `HEDDLE_CHECKED` defined, and include `heddle.h`. The decoder uses only integer arithmetic, fixed static tables and four-byte copies. It needs a little-endian machine and never allocates memory.
 
 ```sh
 cc -std=c11 -Os -ffreestanding -DHEDDLE_CHECKED -c unpack.c unsplit.c
@@ -78,20 +78,37 @@ int restore(const uint8_t *member, uint32_t member_bytes,
 }
 ```
 
-Read the first 16 bytes before sizing buffers. The four-byte tag identifies the layout: version 2 writes HDS2 for solid LZMA, HDB2 for independent blocks and HDX2 for blocks with consecutive long conditional targets XORed, and its readers still read version 1's HDL1. The little-endian u32s at offsets 4 and 8 give output and scratch lengths. Apply the memory budget of your application before allocating. Pass the actual available capacities. Success clears the used scratch. [FORMAT.md](FORMAT.md) has the whole layout, the limits and the rule for a whole LZMA stream, which both readers apply. A dictionary block's decoder borrows the image buffer for its intermediate before reconstructing the fields.
+To size the buffers, read the member's 16-byte header first. Its first four bytes are a tag naming the layout. Version 2 writes `HDS2` for a single LZMA stream, `HDB2` for independently compressed blocks, and `HDX2` for blocks whose consecutive long conditional branch targets are XORed. Version 2 readers also read version 1's `HDL1`. The little-endian u32s at offsets 4 and 8 give the output size and the scratch size. Check both against your application's memory budget before allocating, and pass each buffer's real capacity. On success the decoder clears the part of the scratch buffer it used. For a dictionary block, the decoder briefly uses the output buffer to hold the block's intermediate bytes before it rebuilds the fields. [FORMAT.md](FORMAT.md) documents the full layout, the size limits and the rule both readers use to accept an LZMA stream.
 
-Peak storage is member plus output plus scratch, 16,406 bytes of fixed decoder state on the measured host, and a small call stack. Version 2 scratch usually takes the image size plus 84 bytes and up to one partial instruction's padding. The buffers must be disjoint and calls serialized. The stored sizes are 32-bit. CRC32 detects accidental damage. The checked API also checks stream boundaries independently of CRC. Builds without HEDDLE_CHECKED expose low-level routines for stubs consuming trusted, preverified streams.
+Peak memory is the member, the output and the scratch buffer, plus 16,406 bytes of static decoder state (measured on x86-64) and a small stack. In version 2, scratch is usually the image size plus 84 bytes, plus padding for at most one partial instruction. The three buffers must not overlap, and calls must not run concurrently. All stored sizes are 32-bit. The CRC-32 catches accidental damage, and the checked decoder also checks every stream boundary independently of the CRC. Builds without `HEDDLE_CHECKED` instead expose the low-level routines `heddle_unpack` and `heddle_unsplit`, for stubs that decode trusted, already verified streams.
 
 ## Why the transform works
 
-An opcode tends to look like another opcode, and stack offsets tend to repeat. Heddle walks the instruction bytes and collects 19 streams for fields such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references to the same target get the same image offset. LZMA sees those repetitions together. The inverse walker makes each choice from bytes it has already restored. An unfamiliar opcode, such as a vector prefix, can throw off instruction alignment and hurt compression. Both walkers still agree, even at a partial final instruction. Every pack reads its member back, so a split the walkers disagree on is never written.
+Opcodes tend to resemble other opcodes, and stack offsets tend to repeat. In ordinary machine code these fields are interleaved, which hides the repetition from LZMA. Heddle walks the instructions and sorts their fields into 19 streams, such as opcodes, displacements and immediates. Calls, long conditional branches and RIP-relative references are stored as offsets into the image, so every reference to the same target has the same bytes. LZMA then finds those repeats close together.
 
-BCJ converts branch targets, BCJ2 separates branch operands, and kkrunchy already demonstrated grouping x86 instruction fields for small executables. Heddle applies that approach to x86-64 with a C packer and a freestanding C inverse. [XZ BCJ](https://tukaani.org/xz/liblzma-api/bcj_8h.html) · [7-Zip BCJ2](https://github.com/ip7z/7zip/blob/main/C/Bcj2.h) · [kkrunchy's filter](https://fgiesen.wordpress.com/2011/01/24/x86-code-compression-in-kkrunchy/)
+The decoder's walker decides each step using only bytes it has already restored, so it makes the same choices as the packer's. An unfamiliar instruction, such as one with a vector prefix, can knock the walker out of step with the real instruction boundaries. That costs compression but not correctness: both walkers still agree, even on a partial final instruction. And since every pack decodes its output before writing it, a member the walkers disagree on is never written.
 
-## Run the native tests
+Heddle builds on earlier work. BCJ converts branch targets, BCJ2 moves branch operands into separate streams, and kkrunchy showed that grouping x86 instruction fields pays off for small executables. Heddle applies that approach to x86-64, with a C packer and a freestanding C decoder. See [XZ BCJ](https://tukaani.org/xz/liblzma-api/bcj_8h.html), [7-Zip BCJ2](https://github.com/ip7z/7zip/blob/main/C/Bcj2.h) and [kkrunchy's filter](https://fgiesen.wordpress.com/2011/01/24/x86-code-compression-in-kkrunchy/).
 
-`CC=clang python3 test.py` compiles the public decoder with AddressSanitizer and UndefinedBehaviorSanitizer. It round-trips local binaries, partial instructions and random ranges, verifies scratch clearing, reads a version 1 member from the released writer, and exercises damaged members, invalid sizes and malformed inner streams with recomputed checksums. Every damaged member must get the same verdict from the Python and C readers. `tests/lzma1.py` writes exact LZMA symbol sequences for both sides of the whole-stream rule. Supply other files as arguments, with raw images written as FILE:LO:HI: on macOS, whose programs are Mach-O, an x86-64 slice (`lipo -thin x86_64`) with its `__text` bounds. With `CC=cl`, in a Developer Command Prompt, it builds with MSVC and its AddressSanitizer, which has no UndefinedBehaviorSanitizer.
+## Run the tests
 
-`CC=clang python3 tests/pack.py` builds the C packer with both sanitizers, and with liblzma where it is installed, and holds it to the Python packer: on every input its fields equal the Python split's byte for byte, its opcode dictionary is `opcodes.encode`'s, each packer's members read with the other's reader, the liblzma build's members are the Python packer's, and malformed headers are refused in the same words. It takes the same arguments as test.py, and `CC=cl` too, the first input being the program compare is tried on, and about 20 seconds.
+`CC=clang python3 test.py` builds the decoder with AddressSanitizer and UndefinedBehaviorSanitizer and runs it on:
 
-`python3 tests/mutate.py` runs test.py, which must pass, then removes each check of the two readers in turn and requires test.py to fail, so every check has a test of its own. It takes test.py's arguments. It takes about a minute and a half.
+- round trips of local binaries, partial instructions and random code ranges, checking that the scratch buffer is cleared;
+- a version 1 member from the released version 1 writer;
+- damaged members, invalid sizes and malformed inner streams, with their checksums recomputed. Every damaged member must get the same verdict from the Python and C readers;
+- exact LZMA symbol sequences from `tests/lzma1.py`, covering both sides of the whole-stream rule.
+
+To test other files, pass them as arguments, writing raw images as `FILE:LO:HI`. On macOS, where programs are Mach-O, pass an x86-64 slice (`lipo -thin x86_64`) with the bounds of its `__text` section. With `CC=cl`, from a Developer Command Prompt, the tests build with MSVC and its AddressSanitizer. MSVC has no UndefinedBehaviorSanitizer.
+
+`CC=clang python3 tests/pack.py` builds the C packer with both sanitizers, plus a liblzma build when liblzma is installed, and checks it against the Python packer. For every input:
+
+- its fields match the Python split byte for byte;
+- its opcode dictionary matches `opcodes.encode`'s;
+- each packer's members decode with the other's reader;
+- the liblzma build's members are identical to the Python packer's;
+- both refuse malformed headers with the same messages.
+
+It takes the same arguments as `test.py`, also supports `CC=cl`, and tries `compare` on the first input. It runs in about 20 seconds.
+
+`python3 tests/mutate.py` first requires `test.py` to pass. It then removes each check from the two readers, one at a time, and requires `test.py` to fail, which shows that every check has its own test. It takes the same arguments as `test.py` and runs in about a minute and a half.
