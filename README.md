@@ -2,7 +2,7 @@
 
 ![MIT license](https://shieldcn.dev/badge/License-MIT-527a79.svg?variant=secondary)
 
-Heddle groups fields of x86-64 instructions before LZMA compression. It came out of Pinion, a game being built to fit on one floppy. On Pinion's core, version 2 of the format saves 121,299 bytes beyond BCJ2; version 1 saved 93,710. The wire format is in [FORMAT.md](FORMAT.md).
+Heddle is a filter that helps LZMA compress x86-64 machine code. Before compression it sorts each instruction's fields into separate streams, so opcodes sit next to opcodes and displacements next to displacements. It was built for Pinion, a game that has to fit on one floppy disk. On Pinion's core, version 2 of the format comes out 121,299 bytes smaller than BCJ2, and version 1 came out 93,710 bytes smaller. The wire format is documented in [FORMAT.md](FORMAT.md).
 
 | Input | Original | Plain LZMA | x86 BCJ + LZMA | BCJ2 + LZMA | Heddle 1 (HDL1) | Heddle 2 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -13,7 +13,7 @@ Heddle groups fields of x86-64 instructions before LZMA compression. It came out
 | xz | 103,312 | 41,058 | 38,382 | 37,889 | 35,267 | 34,713 |
 | Linked PE | 15,872 | 7,593 | 7,508 | 7,441 | 7,125 | 7,127 |
 
-On these four Unix programs BCJ2 already gets most of the saving. On true, version 2 buys just 174 bytes beyond BCJ2, 10 fewer than version 1. A private decoder can cost more than the filter saves.
+On the four Unix programs, BCJ2 already gets most of the gain. On `true`, version 2 is only 174 bytes smaller than BCJ2 (version 1 was 184 bytes smaller), less than the extra size of Heddle's decoder. For small programs, a custom decoder can cost more than the filter saves.
 
 | Decoder | unpack.c (LZMA and member) | Filter | Total |
 |---|---:|---:|---:|
@@ -31,7 +31,7 @@ Decoder bytes are x86-64 GCC 16.2 with `-Os -ffreestanding -fno-asynchronous-unw
 
 ## Try a file
 
-The packer is `pack.c`, in C11, with the LZMA encoder in `lzma/`. Install nothing: one line builds it, with GCC or Clang on Linux and with Apple's clang on macOS (an arm64 Mac packs x86-64 code alike). Run these commands from the checkout.
+The packer is `pack.c`, written in C11, with the LZMA encoder vendored in `lzma/`. It has no dependencies and builds with a single command using GCC or Clang on Linux, or Apple's clang on macOS. An arm64 Mac can pack x86-64 programs too. Run these commands from the repository root:
 
 ```sh
 cc -O2 -DHEDDLE_CHECKED -D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c -o heddle
@@ -42,17 +42,21 @@ cmp /usr/bin/ls ls.out
 ./heddle pack image.bin image.hdl --code 0x2000 0x8000
 ```
 
-On Windows, MSVC builds it from a Developer Command Prompt (Visual Studio 2022's Build Tools); MinGW has not been tried.
+On Windows, build it with MSVC from a Developer Command Prompt (Visual Studio 2022 Build Tools). MinGW hasn't been tested.
 
 ```bat
 cl /O2 /DHEDDLE_CHECKED /D_7ZIP_ST pack.c unpack.c unsplit.c lzma/LzmaEnc.c lzma/LzFind.c lzma/Bra86.c /Fe:heddle.exe
 ```
 
-The command detects little-endian x86-64 ELF or PE files with a .text section. Specify file offsets for stripped section tables and raw blobs. The lower bound is inclusive and the upper bound exclusive. Compare uses the installed 7z or 7zz if available. Every pack reads its member back with the C reader before writing it. Unpacking restores the file contents. File permissions belong to the caller.
+Heddle finds the code in little-endian x86-64 ELF and PE files by their .text section. For files without section headers, and for raw images, pass the code's file offsets with `--code LO HI`, where `LO` is inclusive and `HI` is exclusive. `compare` also measures BCJ2 if `7z` or `7zz` is installed. Every `pack` decodes its output with the C reader before writing it. `unpack` restores the file's contents but not its permissions.
 
-The C packer is for use. `heddle.py` (with `split.py` and `opcodes.py`), the packer the format was worked out in, is the reference: `tests/pack.py` holds the C packer to it. Its API is `heddle.pack(data, bounds=None, profile=heddle.LZMA)`, where a profile may change only how hard the encoder looks (FORMAT.md), `heddle.unpack(member, limit=256 << 20)` and `heddle.compare(data, bounds=None)`, and `python3 heddle.py` takes the same commands.
+`pack.c` is the packer to use. `heddle.py`, with `split.py` and `opcodes.py`, is the Python reference implementation the format was developed in, and `tests/pack.py` checks the C packer against it. `python3 heddle.py` accepts the same commands as `./heddle`. Its API is:
 
-The encoder in `lzma/` is the LZMA SDK 9.20's, by Igor Pavlov, public domain, from [7-zip.org](https://www.7-zip.org/a/lzma920.tar.bz2), unchanged (`lzma/LICENSE`). It was measured against the SDK's latest (26.01) and liblzma: on Pinion's core it packs to 560,428 bytes against liblzma's 560,389, where 26.01's packs to 561,482, and the five other programs to 155,490 against the Python packer's 155,617. Built with `-DHEDDLE_LIBLZMA -llzma` in place of `lzma/LzmaEnc.c` and `lzma/LzFind.c`, the C packer compresses with liblzma, and its members are byte for byte those of the Python packer given the same setting.
+- `heddle.pack(data, bounds=None, profile=heddle.LZMA)`. A profile can change how hard the encoder searches, but not the stream's lc/lp/pb settings or a window over 8 MiB, since the member doesn't record them.
+- `heddle.unpack(member, limit=256 << 20)`
+- `heddle.compare(data, bounds=None)`
+
+The encoder in `lzma/` is Igor Pavlov's LZMA SDK 9.20 from [7-zip.org](https://www.7-zip.org/a/lzma920.tar.bz2), unmodified and in the public domain (`lzma/LICENSE`). It packs Pinion's core to 560,428 bytes, close to liblzma's 560,389 and better than the SDK's latest release, 26.01, at 561,482. On the five other programs it packs to 155,490 bytes, against 155,617 from the Python packer. To compress with liblzma instead, build with `-DHEDDLE_LIBLZMA -llzma` in place of `lzma/LzmaEnc.c` and `lzma/LzFind.c`. That build's output is byte-identical to the Python packer's with the same settings.
 
 ## Embed the decoder
 
