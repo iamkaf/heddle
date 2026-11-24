@@ -1,19 +1,22 @@
-/* Raw LZMA1, as Python writes it with FORMAT_RAW. The solid stream uses
-   lc=3, lp=0, pb=2. Independent blocks can use lc + lp <= 3 and pb <= 4.
-   no includes but <stdint.h>, no calls out, integer math only, so the
-   self-unpacking executables can reuse it as is.
+/* Raw LZMA1 with an end marker, as Python's lzma module writes it with
+   FORMAT_RAW. A solid stream uses lc=3, lp=0, pb=2; a block may use any
+   lc + lp <= 3 and pb <= 4. The decoder includes only <stdint.h>, calls
+   no other code and uses integer math, so a small stub can embed it.
 
-   pn_unpack(src, n, dst, size) writes exactly size bytes to dst and returns
-   0, or non-zero if the stream is damaged. Checked, a stream is whole when
-   its first byte is 0, it makes exactly size bytes with every distance
-   inside both what is written and an 8 MiB window, an end marker (of any
-   length) follows, the range coder's code is then 0, and that is the last
-   of its n bytes: the rule liblzma applies, so both readers agree. Whatever the bytes, it reads no
-   further than src[n - 1] and writes no further than dst[size - 1]: past
-   the end the input reads as zeros, every match distance is checked against
-   what is already written, and every copy stops at size. The whole output
-   is the dictionary, so there is no window to allocate. Its 16 KB of
-   probabilities are static: a stack that big would need a stack probe. */
+   heddle_unpack(src, n, dst, size) writes exactly size bytes to dst and
+   returns 0, or non-zero if the stream is damaged. With HEDDLE_CHECKED, a
+   stream is accepted only when it is whole, by the same rule liblzma
+   applies (FORMAT.md): its first byte is 0, it makes exactly size bytes,
+   every distance is inside both the output so far and an 8 MiB window, an
+   end marker follows, the range coder's code is then 0, and that ends its
+   n bytes.
+
+   Whatever the input, it never reads past src[n - 1] or writes past
+   dst[size - 1]. Input past the end reads as zeros, every match distance is
+   checked against the output so far, and every copy stops at size. The
+   output buffer is the dictionary, so there is no window to allocate. The
+   16 KB of probabilities are static, since a stack that large would need a
+   stack probe. */
 
 #include <stdint.h>
 #ifdef _MSC_VER                /* MSVC, for the packer: its own words for the same */
@@ -232,7 +235,7 @@ static int expand(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size,
 #endif
 }
 
-int pn_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
+int heddle_unpack(const uint8_t *src, uint32_t n, uint8_t *dst, uint32_t size)
 {
     return expand(src, n, dst, size, LC, 0, PB);
 }
@@ -325,7 +328,7 @@ int heddle_decode(const uint8_t *src, uint32_t bytes, uint8_t *dst,
     if (~crc != stored)
         return 1;
     if (kind == 'L' || kind == 'S') {
-        if (pn_unpack(src + 16, bytes - 16, scratch, need))
+        if (heddle_unpack(src + 16, bytes - 16, scratch, need))
             return 1;
     } else {
         uint32_t pos = 16, out = 0;

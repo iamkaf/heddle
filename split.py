@@ -4,9 +4,7 @@ import struct
 import subprocess
 import sys
 
-NICE = 96
-
-NS = 19                                 # the streams, in the order they are packed: the best
+NS = 19                                 # the streams: version 1's order, plus MOV; version 2 packs them in ORDER
 SIB, J8, D8, D8S, D8L, D32, D32S, D32L, RIP, I8, ISH, I32, IMR, I64, JCC, JMP, CALL, MOV, OP = range(NS)
 
 ORDER = (SIB, J8, D8, D8L, D8S, D32, D32S, D32L, RIP, ISH, I8, I32, IMR, I64, JCC, JMP, CALL, MOV, OP)

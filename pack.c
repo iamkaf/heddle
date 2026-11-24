@@ -398,7 +398,7 @@ static void encode(buf *data, const uint8_t *ops, const buf *tokens)
 /* ---- LZMA: raw LZMA1 with an end marker, one encoder setting ---- */
 
 /* An 8 MiB window (the readers'), BT3, depth 256, nice length 64: the
-   setting measured best for this encoder on Pinion's core (README.md). */
+   setting that packed the README's game core smallest with this encoder. */
 #ifdef HEDDLE_LIBLZMA
 static void compress(buf *out, const uint8_t *in, size_t n, unsigned lc, unsigned lp, unsigned pb)
 {

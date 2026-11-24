@@ -7,7 +7,7 @@
 #define __attribute__(x)
 #endif
 
-enum {                         /* the streams, in the order they are packed: the best */
+enum {                         /* the streams: version 1's order, plus MOV; version 2 packs them in order[] */
     S_SIB, S_J8, S_D8, S_D8S, S_D8L, S_D32, S_D32S, S_D32L, S_RIP, S_I8, S_ISH, S_I32,
     S_IMR, S_I64, S_JCC, S_JMP, S_CALL, S_MOV, S_OP, NS
 };
@@ -84,7 +84,7 @@ __attribute__((noinline)) static unsigned take(unsigned s, unsigned n)
 #ifdef HEDDLE_CHECKED
 int heddle_join(uint8_t *to, uint32_t n, uint8_t *src, uint32_t size, int kind)
 #else
-void pn_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
+void heddle_unsplit(uint8_t *to, uint32_t n, uint8_t *src)
 #endif
 {
     uint8_t *p;
